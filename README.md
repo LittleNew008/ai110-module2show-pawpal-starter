@@ -24,7 +24,7 @@ Your final app should:
 
 ## 🧩 Implementation Summary
 
-**What was built.** The backend is in [pawpal_system.py](pawpal_system.py): a small domain model plus a `Scheduler` that turns it into a one-day plan with a reason for every decision. [main.py](main.py) is a command-line demo, [app.py](app.py) is the Streamlit UI, connected to those classes. The pytest suite (130 tests) is in [tests/test_pawpal.py](tests/test_pawpal.py) for the backend and [tests/test_app.py](tests/test_app.py) for the UI, and [diagrams/uml.mmd](diagrams/uml.mmd) is the class diagram, kept in sync with the backend code. The picture below is a rendering of it (the Mermaid source is `diagrams/uml.mmd`).
+**What was built.** The backend is in [pawpal_system.py](pawpal_system.py): a small domain model plus a `Scheduler` that turns it into a one-day plan with a reason for every decision. [main.py](main.py) is a command-line demo, [app.py](app.py) is the Streamlit UI, connected to those classes. The pytest suite (157 tests) is in [tests/test_pawpal.py](tests/test_pawpal.py) for the backend and [tests/test_app.py](tests/test_app.py) for the UI, and [diagrams/uml.mmd](diagrams/uml.mmd) is the class diagram, kept in sync with the backend code. The picture below is a rendering of it (the Mermaid source is `diagrams/uml.mmd`).
 
 ![PawPal+ class diagram](diagrams/uml.png)
 
@@ -157,19 +157,56 @@ Things to notice: section 2 reorders the tasks by time (the task with no time go
 
 ## 🧪 Testing PawPal+
 
+Run the whole suite from the project root (with the virtual environment active):
+
 ```bash
-# Run the full test suite:
-pytest
-
-# Run with coverage:
-pytest --cov
+python -m pytest
 ```
 
-Sample test output:
+`pytest.ini` points pytest at `tests/` and the project root, so no other setup is needed. To run only the backend tests, use `python -m pytest tests/test_pawpal.py`; add `-v` to list each test.
+
+**What the tests cover.** There are 157 tests: 130 on the backend (`tests/test_pawpal.py`) and 27 that drive the real Streamlit app headlessly (`tests/test_app.py`). They check five core behaviors, each with happy paths and edge cases:
+
+| Core behavior | Happy path | Edge cases |
+|---|---|---|
+| **Sorting** (`sort_by_time`, and the order of a plan) | Tasks added out of order come back in chronological order, in the list and in the plan | An empty list; no task has a time; untimed tasks last; midnight counts as a real time; fixed time beats preferred time; ties break by priority then title ignoring case |
+| **Recurrence** (daily and weekly) | Completing a daily task creates a new task for the following day, with the same details and a new id | Completed days late or early; across month ends, year ends and a leap day; a weekly task stays on its weekday after late completions; a one-off creates nothing; completing twice never duplicates |
+| **Conflict detection** (`find_conflicts`, and the planner) | Overlapping fixed-time tasks are flagged, for the same pet or different pets | Identical duplicate times; a three-way clash reports every pair; overlap by duration, not just start time; back-to-back tasks are not conflicts; the planner then resolves the clash and says why |
+| **Planning rules** | No overlaps, everything inside the day window, the daily minutes limit respected, a required task that cannot fit is flagged | A fixed task starting or ending exactly at the window edges, and one minute outside; a task exactly as long as the window; a required task over the limit; fragmented free time; times with seconds; a day with 600 tasks |
+| **Pets, retrieval and the UI** | Every pet's tasks are read through `Owner.get_all_tasks`; forms add pets and tasks; pets are tiles and the selected tile receives new tasks | A pet with no tasks next to busy ones; an owner with no pets; an empty list is not treated as "no list"; blank names; duplicate ids; generating a schedule with nothing to schedule; completed tasks drop out of the plan |
+
+On top of the fixed examples, 25 seeded random plans and a 20-case random comparison check invariants (nothing overlaps, nothing is lost, the limit is never exceeded), and the tests were checked the other way round too: across the project, dozens of deliberately injected bugs were each caught by at least one test.
+
+**How to read the trickier tests**
+- `@pytest.mark.parametrize` runs one test body once per row of inputs (for example, the calendar-boundary dates), so a failure names the exact row.
+- The random tests use a fixed seed (`random.Random(seed)`), so they try many different days but fail the same way every time.
+- `test_the_sweep_does_work_proportional_to_the_input_not_to_every_pair` counts how many times the conflict search looks at its list, instead of timing it, so it cannot fail just because the computer is busy.
+- The UI tests use Streamlit's `AppTest`, which runs `app.py` without a browser: the test fills a form, clicks a button, and then checks the `Owner` object the app keeps in `st.session_state`.
+
+**Test output** (`python -m pytest`):
 
 ```
-# Paste your pytest output here
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/dev/ai110-module2show-pawpal-starter
+configfile: pytest.ini
+testpaths: tests
+plugins: anyio-4.15.1
+collected 157 items
+
+tests/test_app.py ...........................                            [ 17%]
+tests/test_pawpal.py ................................................... [ 49%]
+........................................................................ [ 95%]
+.......                                                                  [100%]
+
+============================= 157 passed in 3.13s ==============================
 ```
+
+**Confidence level: ★★★★☆ (4 out of 5).**
+
+Why it is high: every test passes; each of the five behaviors is checked on its happy path and its edges; random inputs check the rules that must always hold; and the edge-case round found and fixed a real bug (tasks at the same time and priority were ordered with every capital letter before every lowercase one, so `Cherry` came before `banana`).
+
+Why it is not 5: the tests were written by the same AI assistant that wrote the code, so they can share its blind spots (injecting deliberate bugs reduces this but does not remove it); the UI is tested headlessly and has had only a brief look in a browser; the planner is greedy by design, so tests prove its plans are valid, not that they are the best possible; and overnight days, time zones and seconds in times are not supported (seconds are truncated, and a test documents that). Code coverage has not been measured.
 
 ## 📐 Smarter Scheduling
 

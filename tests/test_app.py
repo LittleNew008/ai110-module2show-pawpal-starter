@@ -419,6 +419,23 @@ def test_no_limit_means_no_warning_until_the_day_window_is_exceeded(at):
     assert any("240 min" in w.value and "120 min" in w.value for w in at.warning)
 
 
+def test_a_pet_with_no_tasks_shows_zero_counts_and_an_empty_schedule_message(at):
+    add_pet(at, "Rex")
+    assert any(m.value == "0 open · 0 done" for m in at.markdown)
+
+    at.button(key="generate").click().run()
+
+    assert not at.exception and not at.table
+    assert any("Nothing is due" in i.value for i in at.info)
+
+
+def test_generating_a_schedule_with_no_pets_at_all_does_not_crash(at):
+    at.button(key="generate").click().run()
+
+    assert not at.exception and not at.table
+    assert any("Nothing is due" in i.value for i in at.info)
+
+
 def test_completed_tasks_drop_out_of_the_plan(at):
     add_pet(at, "Rex")
     add_task(at, "Walk")

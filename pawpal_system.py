@@ -520,13 +520,13 @@ class Scheduler:
 
         The key is a lambda returning a tuple: the requested time, with `time.max` standing in
         for "no time" so that such tasks sort last without ever comparing a time with None, then
-        higher priority, then title, which makes the order predictable. Times are `datetime.time`
+        higher priority, then title ignoring case, which makes the order predictable. Times are `datetime.time`
         values, which compare correctly as they are; zero-padded "HH:MM" strings would sort the
         same way, but a string like "9:30" would not. Returns a new list and leaves `tasks` unchanged.
         """
         return sorted(
             tasks,
-            key=lambda pt: (pt.task.requested_time or time.max, -pt.task.priority.value, pt.task.title),
+            key=lambda pt: (pt.task.requested_time or time.max, -pt.task.priority.value, pt.task.title.casefold()),
         )
 
     def filter_tasks(
