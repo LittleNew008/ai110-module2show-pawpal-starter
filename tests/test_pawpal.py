@@ -271,6 +271,37 @@ def test_owner_availability_validation():
     assert (owner.day_start, owner.day_end) == (t(6), t(18))
 
 
+def test_set_availability_updates_the_cap_and_a_bad_cap_changes_nothing():
+    owner = make_owner()
+    owner.set_availability(t(7), t(19), 90)
+    assert (owner.day_start, owner.day_end, owner.available_minutes) == (t(7), t(19), 90)
+
+    with pytest.raises(ValueError):
+        owner.set_availability(t(6), t(18), 0)
+    assert (owner.day_start, owner.day_end, owner.available_minutes) == (t(7), t(19), 90)
+
+    owner.set_availability(t(7), t(19))  # no cap given means no cap
+    assert owner.available_minutes is None
+
+
+def test_capacity_minutes_is_the_window_or_the_smaller_cap():
+    assert make_owner(start=t(8), end=t(10)).capacity_minutes() == 120  # no cap: the window
+    assert make_owner(start=t(8), end=t(20), cap=60).capacity_minutes() == 60  # cap is tighter
+    assert make_owner(start=t(8), end=t(9), cap=500).capacity_minutes() == 60  # window is tighter
+
+
+def test_pet_and_owner_reject_blank_names_and_negative_age():
+    with pytest.raises(ValueError):
+        Pet("  ", "dog")
+    with pytest.raises(ValueError):
+        Pet("Rex", "")
+    with pytest.raises(ValueError):
+        Pet("Rex", "dog", age=-1)
+    with pytest.raises(ValueError):
+        Owner("  ")
+    assert Pet("Rex", "dog", age=0).age == 0
+
+
 # ---------- ScheduledItem ----------
 
 

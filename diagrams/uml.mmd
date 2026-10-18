@@ -35,7 +35,8 @@ classDiagram
         +list~Pet~ pets
         +add_pet(pet) None
         +remove_pet(pet_id) None
-        +set_availability(start, end) None
+        +set_availability(start, end, available_minutes) None
+        +capacity_minutes() int
         +get_all_tasks() list~PetTask~
     }
 

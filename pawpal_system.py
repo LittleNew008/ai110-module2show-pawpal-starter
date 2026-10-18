@@ -158,6 +158,15 @@ class Pet:
     # Two pets can share a name and species, so removal is by id.
     id: str = field(default_factory=_new_id)
 
+    def __post_init__(self) -> None:
+        """Reject an empty name or species and a negative age."""
+        if not self.name.strip():
+            raise ValueError("pet name must not be empty")
+        if not self.species.strip():
+            raise ValueError("pet species must not be empty")
+        if self.age is not None and self.age < 0:
+            raise ValueError(f"pet age must not be negative, got {self.age}")
+
     def _index_of(self, task_id: str) -> int:
         """Position of the task with `task_id`; raises KeyError if this pet has no such task."""
         for i, task in enumerate(self.tasks):
@@ -211,7 +220,9 @@ class Owner:
     pets: list[Pet] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        """Reject an invalid availability window or minutes cap at construction."""
+        """Reject an empty name or an invalid availability window or minutes cap at construction."""
+        if not self.name.strip():
+            raise ValueError("owner name must not be empty")
         self._validate_availability(self.day_start, self.day_end, self.available_minutes)
 
     @staticmethod
@@ -236,10 +247,16 @@ class Owner:
                 return
         raise KeyError(f"no pet with id {pet_id!r} on owner {self.name!r}")
 
-    def set_availability(self, start: time, end: time) -> None:
-        """Replace the window, validating first so a bad window changes nothing."""
-        self._validate_availability(start, end, self.available_minutes)
-        self.day_start, self.day_end = start, end
+    def set_availability(self, start: time, end: time, available_minutes: int | None = None) -> None:
+        """Replace the window and the optional minutes cap (None = no cap), validating
+        first so bad input changes nothing."""
+        self._validate_availability(start, end, available_minutes)
+        self.day_start, self.day_end, self.available_minutes = start, end, available_minutes
+
+    def capacity_minutes(self) -> int:
+        """Care minutes available per day: the window length, or the cap if that is smaller."""
+        window = to_minutes(self.day_end) - to_minutes(self.day_start)
+        return window if self.available_minutes is None else min(window, self.available_minutes)
 
     def get_all_tasks(self) -> list["PetTask"]:
         """Every pet's tasks together, each paired with the pet it belongs to.

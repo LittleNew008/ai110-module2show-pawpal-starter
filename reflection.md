@@ -1,6 +1,6 @@
 # PawPal+ Project Reflection
 
-> Status: `pawpal_system.py` is implemented (data classes, validation, scheduler) with 58 passing pytest tests. The Streamlit UI is not wired to it yet, so the closing reflection (section 5) is still **Pending**.
+> Status: `pawpal_system.py` is implemented (data classes, validation, scheduler) with 78 passing pytest tests (61 backend, 17 headless UI). `app.py` is connected to it. The closing reflection (section 5) is still **Pending**.
 
 ## 1. System Design
 
@@ -55,11 +55,21 @@ The design changed several times before any scheduling logic was written. Each c
 
 19. **Two gaps found and fixed.** (a) The Scheduler never called `get_all_tasks`: I had made it read from the separate `iter_tasks()`, so the one Owner method meant for "every pet's tasks together" was an unused wrapper. A spy subclass of `Owner` confirmed it (the Scheduler called only `iter_tasks`). I removed `iter_tasks` and made `get_all_tasks` the single method the Scheduler reads from. This gives up a lazy iterator whose only benefit was avoiding one temporary list, which was not worth a second public method, and it retracts part of what I claimed in change 15's first version. (b) `Task` exposed completion only as the raw `last_completed` date, with no way to ask for its status. I added `Task.is_completed(on)` (a one-off task stays completed; a recurring one is completed only on the day it was done) and made `is_due` use it, so there is one definition of "completed".
 
-20. **`Task.description` was added.** The requirement describes a Task as having a description, and the code only had a short `title`. I kept `title` as the name shown in plans and added an optional free-text `description` (default empty) for details such as how to give a medication. It is editable through `edit_task`. I placed it after `required` so existing positional arguments keep working. It is not shown in `explain()` or `to_table()` yet, because the UI is not wired up; that is a decision for when `app.py` is connected.
+20. **`Task.description` was added.** The requirement describes a Task as having a description, and the code only had a short `title`. I kept `title` as the name shown in plans and added an optional free-text `description` (default empty) for details such as how to give a medication. It is editable through `edit_task`. I placed it after `required` so existing positional arguments keep working. The UI forms let you enter and edit it, but it is not shown in `explain()` or `to_table()`, so it does not appear in the plan table.
+
+*From connecting the UI*
+
+21. **`Owner.set_availability` now takes the minutes cap.** The UI needs to change the window and the cap together, and assigning `owner.available_minutes` directly would skip validation. The method is now `set_availability(start, end, available_minutes=None)`: it replaces all three values, `None` means no cap, and bad input changes nothing. The catch is that calling it without a cap removes an existing cap, so the UI always passes all three.
+22. **`Pet` and `Owner` validate their names.** A form hands raw text to `Pet(...)`, and `Pet` accepted a blank name. `Pet` now rejects an empty name or species and a negative age, and `Owner` rejects an empty name, the same way `Task` already validated itself. This keeps the rules in the classes: the UI only catches `ValueError` and shows it. The one rule that stays in the UI is rejecting a duplicate pet name, because the pet pickers show names (the classes themselves still allow two pets with the same name, told apart by id).
+23. **How the UI is wired, and why.** The `Owner` lives in `st.session_state` and is created only when the key is missing, because Streamlit re-runs the whole script on every click. Forms call `Owner.add_pet(Pet(...))` and `Pet.add_task(Task(...))`. Buttons use the objects' own methods as `on_click` callbacks (`task.mark_complete`, `pet.remove_task`, `owner.remove_pet`), which run before the page redraws. After a successful form action the app stores a message and calls `st.rerun()`; without that, lists drawn earlier on the page would show stale data until the next click. The plan is rebuilt from the live `Owner` on every run once "Generate schedule" has been pressed, so it cannot go stale, and everything is addressed by id, not by name.
+
+*From trying the UI by hand*
+
+24. **The daily minutes limit was easy to set and then silently ignored.** I tried the UI with a limit of 60 minutes per day and could still add four 20-minute tasks. Reproducing it showed two separate things. First, the scheduler was correct: with the limit saved, the plan scheduled three tasks (60 min) and skipped the fourth with a reason, and adding tasks was never meant to be blocked, because the limit caps what gets scheduled, not what you may record, and a recurring or required task still belongs on the list. Second, the form had a real trap: the number field only took effect if a separate "Limit total care minutes" checkbox was also ticked, so typing 60 without the checkbox saved no limit at all. I removed the checkbox (the field is now "Max care minutes per day", where 0 means no limit), and added a warning in the Tasks section as soon as today's tasks add up to more than the available time. The available time comes from a new `Owner.capacity_minutes()` (the window length or the cap, whichever is smaller), so that rule lives in the class, not in the UI. I chose a warning over blocking the add; blocking would also be a defensible design, and is a decision I can reverse.
 
 Lesson so far: the biggest design problems (recurrence, identity, time arithmetic) were invisible in the UML and only showed up when I asked what each method would actually have to do, and when I ran the code. The cap-ordering problem (change 16) only appeared while writing the placement loop, and the bypassed `get_all_tasks` (change 19) only appeared when I checked what the Scheduler actually calls instead of what I intended it to call.
 
-Not verified: the Mermaid diagram has not been rendered, and nothing is wired into `app.py` yet.
+Not verified: the Mermaid diagram has not been rendered, and the UI has been tried by hand only briefly (which is how change 24 was found) plus headless tests and a server start-up check, so its layout and look have not been properly reviewed.
 
 ---
 
@@ -99,6 +109,7 @@ The most helpful prompts were not "write this" but "check this against that": th
 
 - The overall design and the clock-time plan (an open question it raised, which I answered yes).
 - The review findings: I asked for all of them to be applied, so I accepted them as a batch rather than weighing each one. That means I have not individually reviewed every choice Claude made inside that batch (the cap ordering and dropping `priority_score()` are the two I know of).
+- The UI layout and widget choices, and the small backend additions the forms needed (a cap parameter on `set_availability`, validation on `Pet` and `Owner`), were Claude's choices to implement the wiring I asked for. I have not reviewed them beyond running the app's tests.
 
 **What I rejected or changed**
 
@@ -110,17 +121,20 @@ The most helpful prompts were not "write this" but "check this against that": th
 - **The Scheduler bypassed the Owner method.** Claude built a separate `iter_tasks()` for the Scheduler, so `get_all_tasks()` (the one method the requirements say the Scheduler must read from) was an unused wrapper. This was its own mistake, and it was only found when I asked it to double check against the requirement list. It then fixed it and withdrew its earlier claim that the lazy iterator was the better design.
 - **A false alarm from its own checker.** The UML comparison script reported a difference that did not exist (a bug in the script's handling of enums), which it diagnosed and fixed rather than changing the code.
 - **A test setup error.** 36 of the first 53 tests failed because tasks default to today's `start_date` while the tests planned for a March date. The scheduler was right and the tests were wrong.
+- **A UI trap the tests missed.** Claude's form made the minutes limit depend on a separate checkbox, so typing a limit without ticking it silently saved nothing. Its 15 UI tests all ticked the checkbox, so none could notice; I found it only by trying the app by hand (change 24). The checkbox is gone, and there are now tests for the exact scenario I tried.
+- **A UI test that could not fail.** Claude's first version of the "Done" button test passed even when the button was deliberately broken to record the wrong day, because it used a one-off task, which counts as completed on any day. A mutation check exposed this; the test now uses a daily task and asserts the exact date, and the same deliberate bug is caught.
 
 **How I verified the result**
 
 - **Name-level check against the design:** a script compares every class, attribute, method and parameter in `pawpal_system.py` with `diagrams/uml.mmd`; it reports no differences.
 - **Reproduce before fixing:** each review suspicion (equal pets, `time` arithmetic errors, rejected priority strings, unvalidated assignment, the Scheduler's actual calls) was reproduced by running code before a fix was made.
-- **Tests that can fail:** 58 pytest tests pass, including random-input invariants. Across several rounds, deliberate bugs were injected into a scratch copy (a broken sort key, no gap search, no flagging, no cap check, a weekly rule that ignores the weekday, a Scheduler that bypasses `get_all_tasks`, a no-op `mark_complete`, an `add_task` that does not append) and the tests caught each one. One further mutation was not aimed at the tests being checked, and I did not count it as evidence for them.
+- **Tests that can fail:** 78 pytest tests pass (61 backend, 17 UI), including random-input invariants. Across several rounds, deliberate bugs were injected into a scratch copy (a broken sort key, no gap search, no flagging, no cap check, a weekly rule that ignores the weekday, a Scheduler that bypasses `get_all_tasks`, a no-op `mark_complete`, an `add_task` that does not append) and the tests caught each one. One further mutation was not aimed at the tests being checked, and I did not count it as evidence for them.
 - **End to end:** `python main.py` runs the whole pipeline, and its output is pasted in the README, verified identical to a fresh run.
+- **UI integration:** 17 headless tests drive the real `app.py` with Streamlit's `AppTest` (fill a form, click a button) and assert on the `Owner` stored in `st.session_state`, which checks the wiring itself. The real server was also started, and it reported healthy and served the page. Deliberate UI bugs (an `Owner` rebuilt on every run, a task added to the wrong pet, the add-pet form not calling `Owner.add_pet`, the wrong completion date, no rerun after an action) were each caught.
 
 **What is still not verified**
 
-The Mermaid diagram has never been rendered, nothing is connected to the Streamlit UI, and the random tests check invariants (no overlaps, nothing lost), not that the plan chosen is the best possible one.
+The Mermaid diagram has never been rendered, the UI has only been tried by hand briefly (plus headless tests and a server start-up check), so its layout and look are not properly reviewed, and the random tests check invariants (no overlaps, nothing lost), not that the plan chosen is the best possible one.
 
 ---
 
@@ -128,7 +142,7 @@ The Mermaid diagram has never been rendered, nothing is connected to the Streaml
 
 **a. What you tested**
 
-58 pytest tests in `tests/test_pawpal.py`, all passing:
+78 pytest tests, all passing: 61 backend tests in `tests/test_pawpal.py` and 17 headless UI tests in `tests/test_app.py`.
 
 - **Two basic behaviors, tested directly:** calling `mark_complete()` changes the task's status (starts incomplete, becomes complete, and a different task is unaffected), and adding a task to a pet increases that pet's task count (0, 1, 2, and a rejected duplicate leaves the count unchanged). Each was mutation-checked: making `mark_complete` do nothing, or making `add_task` forget to append, makes the matching test fail.
 
@@ -137,6 +151,7 @@ The Mermaid diagram has never been rendered, nothing is connected to the Streaml
 - **Management:** identical tasks and same-named pets stay distinct and are removed by id; duplicate ids are rejected; `edit_task` keeps identity, validates, and whitelists fields; invalid availability is rejected.
 - **Scheduling:** sort order; a fixed-time task is not displaced by a higher-priority flexible one; fixed-time clashes; a required task that does not fit is flagged and not forced in; a required fixed task outside the window is flagged; fragmented free time; skip-and-continue; the minutes cap; preferred times and owner category preferences; no overlap across pets; a daily task done today returns tomorrow; empty plans; the table and explanation output.
 - **Invariants:** 25 seeded random plans check that nothing overlaps, everything stays in the window, fixed tasks start at their fixed time, the cap is respected, and every due task is either scheduled or skipped exactly once.
+- **UI wiring (`tests/test_app.py`):** the `Owner` is created once and survives reruns; the add-pet form adds to the `Owner` and shows the pet; blank and duplicate pet names and blank task titles show an error and add nothing; a task goes to the selected pet only; the fixed, preferred and flexible timing modes set the right fields; edit, done and remove actions work and a bad edit leaves the task untouched; the availability form saves the window and cap and rejects a bad window; the schedule table covers every pet's tasks, updates as tasks change without pressing the button again, warns about a required task that cannot fit, and drops completed tasks.
 
 Separately from the test suite, `main.py` is a manual end-to-end demo: it builds an owner with two pets and six tasks at different times, generates today's plan and prints it, which confirmed that the pieces work together outside of pytest. Its output is pasted into the README's Sample Output section as evidence, and was verified to match a fresh run exactly. It is not an automated check, since nothing asserts on its output.
 
@@ -144,7 +159,7 @@ These matter because the scheduler's value is that its plan can be trusted: a do
 
 **b. Confidence**
 
-Fairly confident in the scheduler's core rules for single-day plans, since they are covered by targeted tests, random invariant checks, and a mutation check (five deliberate bugs, all caught). Less confident about everything the tests do not touch: the Streamlit UI is not connected, the Mermaid diagram was never rendered, and the random tests only assert invariants, not that the chosen plan is the best one. Edge cases to test next: tasks on the same pet with the same fixed time, a preferred start that falls outside the window, tasks with seconds in their times (they are truncated to whole minutes), windows ending at 23:59, a pet with no tasks among others that have some, and many tasks (to confirm speed is fine).
+Fairly confident in the scheduler's core rules for single-day plans, since they are covered by targeted tests, random invariant checks, and a mutation check (five deliberate bugs, all caught). Less confident about everything the tests do not touch: the UI has only been tried by hand briefly, plus headless tests and a server start-up check, the Mermaid diagram was never rendered, and the random tests only assert invariants, not that the chosen plan is the best one. Edge cases to test next: tasks on the same pet with the same fixed time, a preferred start that falls outside the window, tasks with seconds in their times (they are truncated to whole minutes), windows ending at 23:59, a pet with no tasks among others that have some, and many tasks (to confirm speed is fine).
 
 ---
 
