@@ -8,8 +8,10 @@ arithmetic.
 import dataclasses
 import math
 from dataclasses import dataclass, field
-from datetime import date, time
+from datetime import date, time, timedelta
 from enum import Enum
+from itertools import combinations
+from typing import TypeVar
 from uuid import uuid4
 
 MINUTES_PER_DAY = 24 * 60
@@ -68,6 +70,10 @@ class Recurrence(Enum):
     WEEKLY = "weekly"
 
 
+# Gap between consecutive occurrences of a recurring task (ONCE has none).
+_RECURRENCE_STEP = {Recurrence.DAILY: timedelta(days=1), Recurrence.WEEKLY: timedelta(weeks=1)}
+
+
 @dataclass
 class Task:
     title: str
@@ -83,12 +89,11 @@ class Task:
     # Free-text details about the activity (e.g. "half a pill, hidden in cheese").
     # `title` is the short name shown in plans; this is optional extra detail.
     description: str = ""
-    # First day the task applies. For ONCE it is the due date; for WEEKLY it also
-    # fixes the weekday the task falls on.
+    # Day this occurrence becomes due. It stays due until completed. A recurring task
+    # (DAILY/WEEKLY) gets a new occurrence with a later start_date when completed.
     start_date: date = field(default_factory=date.today)
-    # Most recent day the task was completed (None = never). Replaces a single
-    # `completed` flag, which cannot work for tasks that recur.
-    last_completed: date | None = None
+    # Day this occurrence was completed (None = still open).
+    completed_on: date | None = None
     # Unique identity: two tasks with identical fields are still different tasks,
     # so Pet edits and removals look tasks up by this id.
     id: str = field(default_factory=_new_id)
@@ -102,31 +107,52 @@ class Task:
         if self.duration_minutes <= 0:
             raise ValueError(f"duration_minutes must be positive, got {self.duration_minutes}")
 
+    @property
+    def requested_time(self) -> time | None:
+        """The time of day the owner asked for: `fixed_time`, else `preferred_start`, else None."""
+        return self.fixed_time if self.fixed_time is not None else self.preferred_start
+
     def is_due(self, on: date) -> bool:
-        """Whether the task applies on `on`.
+        """Whether the task still needs doing on `on`: it has started and is not completed.
 
-        - never due before `start_date`
-        - ONCE: due until completed (an overdue one stays due)
-        - DAILY: due every day, unless already completed on `on`
-        - WEEKLY: due on the weekday of `start_date`, unless already completed on `on`
+        An overdue task stays due until it is completed. A recurring task is not "due every
+        day": completing it creates the next occurrence (see `mark_complete`), so at most one
+        open occurrence of a series exists at a time.
         """
-        if on < self.start_date or self.is_completed(on):
-            return False
-        if self.recurrence is Recurrence.WEEKLY:
-            return on.weekday() == self.start_date.weekday()
-        return True
+        return self.completed_on is None and on >= self.start_date
 
-    def is_completed(self, on: date) -> bool:
-        """Completion status as of `on`. A ONCE task stays completed forever; a
-        recurring task counts as completed only for the day it was done, so it
-        becomes open again the next time it falls due."""
-        if self.last_completed is None:
-            return False
-        return self.recurrence is Recurrence.ONCE or self.last_completed == on
+    def is_completed(self) -> bool:
+        """True once this occurrence has been marked complete."""
+        return self.completed_on is not None
 
-    def mark_complete(self, on: date) -> None:
-        """Record completion on `on` (sets `last_completed`)."""
-        self.last_completed = on
+    def next_due_date(self, on: date) -> date | None:
+        """Due date of the next occurrence after completing on `on`; None for a ONCE task.
+
+        Occurrences stay on the task's own schedule (`start_date` plus whole steps of one day
+        or one week), so a weekly Monday task finished late on Wednesday is next due the
+        following Monday, not 7 days after Wednesday. Finished on its due day, this is simply
+        `on + timedelta(days=1)` (daily) or `on + timedelta(weeks=1)` (weekly).
+        """
+        step = _RECURRENCE_STEP.get(self.recurrence)
+        if step is None:
+            return None
+        elapsed = (max(on, self.start_date) - self.start_date) // step  # whole steps already passed
+        return self.start_date + (elapsed + 1) * step
+
+    def mark_complete(self, on: date) -> "Task | None":
+        """Mark this occurrence complete on `on`; return the new next occurrence, or None.
+
+        A daily or weekly task returns a fresh copy (new id, due on `next_due_date`) that the
+        caller must add to the pet; `Pet.complete_task` does this. A ONCE task, or one that is
+        already complete, returns None, so completing twice never creates a duplicate.
+        """
+        if self.is_completed():
+            return None
+        self.completed_on = on
+        next_due = self.next_due_date(on)
+        if next_due is None:
+            return None
+        return dataclasses.replace(self, id=_new_id(), start_date=next_due, completed_on=None)
 
 
 # Fields Pet.edit_task may change; `id` is deliberately excluded.
@@ -142,7 +168,7 @@ EDITABLE_TASK_FIELDS = frozenset(
         "recurrence",
         "required",
         "start_date",
-        "last_completed",
+        "completed_on",
     }
 )
 
@@ -199,6 +225,13 @@ class Pet:
     def remove_task(self, task_id: str) -> None:
         """Remove the task with `task_id`; raises KeyError if this pet has no such task."""
         del self.tasks[self._index_of(task_id)]
+
+    def complete_task(self, task_id: str, on: date) -> Task | None:
+        """Complete the task with `task_id` on `on`; add and return its next occurrence, if any."""
+        next_task = self.tasks[self._index_of(task_id)].mark_complete(on)
+        if next_task is not None:
+            self.tasks.append(next_task)
+        return next_task
 
     def get_tasks(self) -> list[Task]:
         """A copy of the task list (the Task objects themselves are shared)."""
@@ -407,6 +440,28 @@ def _carve(free: list[tuple[int, int]], start: int, end: int) -> list[tuple[int,
     return result
 
 
+T = TypeVar("T")
+
+
+def _overlapping_pairs(spans: list[tuple[int, int, T]]) -> list[tuple[tuple[int, int, T], tuple[int, int, T]]]:
+    """Every pair of overlapping spans, the earlier-starting one first.
+
+    A span is `(start minute, end minute, item)`. `spans` must be sorted by start, and each
+    must be longer than zero. Because they are
+    sorted, a span can only overlap the later spans that start before it ends, so the inner
+    loop stops at the first one that does not. That makes the work proportional to the number
+    of spans plus the number of overlaps, instead of comparing every pair. Spans that merely
+    touch do not overlap.
+    """
+    pairs = []
+    for i, first in enumerate(spans):
+        for j in range(i + 1, len(spans)):
+            if spans[j][0] >= first[1]:  # starts at or after `first` ends, and so does everything later
+                break
+            pairs.append((first, spans[j]))
+    return pairs
+
+
 class Scheduler:
     """Builds a DailyPlan for one owner.
 
@@ -459,6 +514,80 @@ class Scheduler:
             tasks,
             key=lambda pt: (not pt.task.required, -pt.task.priority.value, pt.task.duration_minutes),
         )
+
+    def sort_by_time(self, tasks: list[PetTask]) -> list[PetTask]:
+        """Order tasks by the time of day they ask for, earliest first; tasks with no time go last.
+
+        The key is a lambda returning a tuple: the requested time, with `time.max` standing in
+        for "no time" so that such tasks sort last without ever comparing a time with None, then
+        higher priority, then title, which makes the order predictable. Times are `datetime.time`
+        values, which compare correctly as they are; zero-padded "HH:MM" strings would sort the
+        same way, but a string like "9:30" would not. Returns a new list and leaves `tasks` unchanged.
+        """
+        return sorted(
+            tasks,
+            key=lambda pt: (pt.task.requested_time or time.max, -pt.task.priority.value, pt.task.title),
+        )
+
+    def filter_tasks(
+        self,
+        tasks: list[PetTask] | None = None,
+        *,
+        pet_name: str | None = None,
+        completed: bool | None = None,
+    ) -> list[PetTask]:
+        """Keep tasks for one pet and/or with one completion status; `None` means "any".
+
+        `pet_name` is matched ignoring case. `completed=True` keeps finished tasks and
+        `completed=False` keeps open ones. With no `tasks` given it starts from every pet's
+        tasks, read through `Owner.get_all_tasks`. An unknown pet name gives an empty list.
+        """
+        pairs = self.owner.get_all_tasks() if tasks is None else tasks
+        wanted = None if pet_name is None else pet_name.strip().lower()
+        return [
+            pt for pt in pairs
+            if (wanted is None or pt.pet.name.lower() == wanted)
+            and (completed is None or pt.task.is_completed() == completed)
+        ]
+
+    def mark_task_complete(self, task_id: str, on: date) -> Task | None:
+        """Complete the task with `task_id` on `on`, wherever it lives, and return its next occurrence.
+
+        Finds the owning pet by reading through `Owner.get_all_tasks`, then lets `Pet.complete_task`
+        record the completion and add the new occurrence of a daily or weekly task (None otherwise).
+        Raises KeyError if no pet has that task.
+        """
+        for pt in self.owner.get_all_tasks():
+            if pt.task.id == task_id:
+                return pt.pet.complete_task(task_id, on)
+        raise KeyError(f"no task with id {task_id!r} on any pet")
+
+    def find_conflicts(self, on: date) -> list[str]:
+        """Warn about due tasks whose fixed times overlap, for the same pet or different pets.
+
+        A lightweight check that returns plain warning messages and never raises or changes
+        anything. It compares due tasks that have a `fixed_time`, because only those have a
+        committed slot, and it uses duration: two tasks conflict when their time ranges
+        overlap, not only when they start in the same minute. Flexible tasks are skipped
+        because the planner moves them around; `generate_plan` also resolves fixed-time clashes
+        when it builds the plan, and these warnings let the owner see them before that.
+        The pair search is the shared early-exit sweep in `_overlapping_pairs`.
+        """
+        spans: list[tuple[int, int, PetTask]] = []
+        for pt in self.filter_due_tasks(on):
+            if pt.task.fixed_time is not None:
+                start = to_minutes(pt.task.fixed_time)
+                spans.append((start, start + pt.task.duration_minutes, pt))
+        spans.sort(key=lambda span: (span[0], span[2].task.title))
+
+        warnings = []
+        for (a_start, a_end, a), (b_start, b_end, b) in _overlapping_pairs(spans):
+            scope = "same pet" if a.pet.id == b.pet.id else "different pets"
+            warnings.append(
+                f"Conflict ({scope}): '{a.task.title}' ({a.pet.name}, {_fmt(a_start)}-{_fmt(a_end)}) "
+                f"overlaps '{b.task.title}' ({b.pet.name}, {_fmt(b_start)}-{_fmt(b_end)})"
+            )
+        return warnings
 
     def fit_to_available_time(
         self, tasks: list[PetTask]
@@ -537,15 +666,13 @@ class Scheduler:
     def detect_conflicts(self, items: list[ScheduledItem]) -> list[tuple[ScheduledItem, ScheduledItem]]:
         """Return overlapping pairs. Empty for any plan the scheduler generates
         (clashes are resolved during placement and reported via DailyPlan.warnings),
-        so this doubles as an invariant check in tests."""
-        ordered = sorted(items, key=lambda i: to_minutes(i.start))
-        conflicts = []
-        for i, first in enumerate(ordered):
-            for second in ordered[i + 1:]:
-                if to_minutes(second.start) >= to_minutes(first.end):
-                    break  # sorted by start, so nothing later can overlap `first`
-                conflicts.append((first, second))
-        return conflicts
+        so this doubles as an invariant check in tests.
+
+        Sorts by start time once, then uses the early-exit sweep in `_overlapping_pairs`: the
+        cost is about O(n log n) for the sort plus the number of overlaps found, so a plan with
+        no conflicts is checked in a single pass."""
+        spans = sorted(((to_minutes(i.start), to_minutes(i.end), i) for i in items), key=lambda span: span[0])
+        return [(a, b) for (_, _, a), (_, _, b) in _overlapping_pairs(spans)]
 
     def _build_reason(self, pet_task: PetTask, placed: bool, detail: str) -> str:
         """Single place that words scheduled/skipped reasons for `fit_to_available_time`."""

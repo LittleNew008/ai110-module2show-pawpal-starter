@@ -5,7 +5,7 @@ assert on the Owner object stored in st.session_state, so they check the wiring
 between the UI and the classes in pawpal_system.py.
 """
 
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
 
 import pytest
@@ -35,10 +35,18 @@ def add_pet(at, name, species="dog"):
     return at
 
 
+def select_pet(at, pet_id):
+    """Click a pet's tile (a no-op if it is already the selected one, whose button is disabled)."""
+    button = at.button(key=f"select_pet_{pet_id}")
+    if not button.disabled:
+        button.click().run()
+    return at
+
+
 def add_task(at, title, *, pet_id=None, duration=20, timing=None, when=None, required=False, priority=None,
              recurrence=None):
     if pet_id is not None:
-        at.selectbox(key="task_pet").set_value(pet_id)
+        select_pet(at, pet_id)  # tasks go to the pet whose tile is selected
     if recurrence is not None:
         at.selectbox(key="task_repeat").set_value(recurrence)
     at.text_input(key="task_title").set_value(title)
@@ -86,8 +94,72 @@ def test_add_pet_form_adds_a_pet_to_the_owner_and_updates_the_page(at):
     pet = owner_of(at).pets[0]
     assert (pet.name, pet.species) == ("Mochi", "cat")  # whitespace stripped
     assert any(s.value == "Added Mochi." for s in at.success)
-    assert any("Mochi" in m.value for m in at.markdown)  # the pet list shows it
-    assert at.selectbox(key="task_pet").options == ["Mochi (cat)"]  # and the task form can use it
+    assert any("Mochi" in m.value for m in at.markdown)  # the pet's tile shows it
+    assert at.button(key=f"select_pet_{pet.id}").disabled  # and it is already selected, so tasks can be added
+
+
+# ---------- pets are shown as tiles ----------
+
+
+def test_pets_are_shown_as_tiles_not_as_a_dropdown(at):
+    for name in ("Rex", "Mochi", "Kiwi", "Biscuit"):  # four pets wrap onto a second row
+        add_pet(at, name)
+    pets = owner_of(at).pets
+
+    for pet in pets:
+        assert f"select_pet_{pet.id}" in [b.key for b in at.button]  # one tile (with a Select button) per pet
+        assert f"remove_pet_{pet.id}" in [b.key for b in at.button]
+    pet_names = {p.name for p in pets}
+    for selectbox in at.selectbox:  # no remaining dropdown lists the pets
+        assert not pet_names & set(selectbox.options), selectbox.key
+    assert "task_pet" not in [s.key for s in at.selectbox] and "filter_pet" not in [s.key for s in at.selectbox]
+
+
+def test_tiles_show_icon_details_and_open_and_done_counts(at):
+    add_pet(at, "Mochi", species="cat")
+    mochi = owner_of(at).pets[0]
+    mochi.breed, mochi.age = "Siamese", 2
+    add_task(at, "Brush")
+    add_task(at, "Play")
+    at.button(key=f"done_{mochi.tasks[0].id}").click().run()
+
+    headings = [m.value for m in at.markdown if m.value.startswith("###")]
+    assert any("🐱" in h and "Mochi" in h for h in headings)
+    assert any("cat" in c.value and "Siamese" in c.value and "2 yr" in c.value for c in at.caption)
+    assert any(m.value == "1 open · 1 done" for m in at.markdown)
+
+    add_pet(at, "Kiwi", species="other")
+    assert any("🐾" in m.value and "Kiwi" in m.value for m in at.markdown if m.value.startswith("###"))
+
+
+def test_a_new_pet_is_selected_and_clicking_a_tile_changes_which_pet_gets_tasks(at):
+    add_pet(at, "Rex")
+    add_pet(at, "Mochi", species="cat")
+    rex, mochi = owner_of(at).pets
+    assert at.session_state["selected_pet_id"] == mochi.id  # the newest pet is selected
+    assert at.button(key=f"select_pet_{mochi.id}").disabled and not at.button(key=f"select_pet_{rex.id}").disabled
+    assert any("Adding a task for **Mochi**" in m.value for m in at.markdown)
+
+    at.button(key=f"select_pet_{rex.id}").click().run()
+
+    assert at.session_state["selected_pet_id"] == rex.id
+    assert at.button(key=f"select_pet_{rex.id}").disabled and not at.button(key=f"select_pet_{mochi.id}").disabled
+    assert any("Adding a task for **Rex**" in m.value for m in at.markdown)
+    add_task(at, "Walk")
+    assert [t.title for t in rex.tasks] == ["Walk"] and mochi.tasks == []
+
+
+def test_removing_the_selected_tile_selects_another_pet(at):
+    add_pet(at, "Rex")
+    add_pet(at, "Mochi")
+    rex, mochi = owner_of(at).pets
+    assert at.session_state["selected_pet_id"] == mochi.id
+
+    at.button(key=f"remove_pet_{mochi.id}").click().run()
+
+    assert [p.name for p in owner_of(at).pets] == ["Rex"]
+    assert at.session_state["selected_pet_id"] == rex.id  # fell back to the remaining pet
+    assert at.button(key=f"select_pet_{rex.id}").disabled
 
 
 def test_blank_and_duplicate_pet_names_show_an_error_and_add_nothing(at):
@@ -161,20 +233,93 @@ def test_edit_form_changes_the_task_and_a_bad_edit_shows_an_error(at):
     assert task.title == "Long walk" and at.error  # rejected, task untouched
 
 
-def test_done_button_completes_the_task_and_remove_button_deletes_it(at):
+def test_done_button_completes_a_daily_task_and_creates_the_next_occurrence(at):
     add_pet(at, "Rex")
-    add_task(at, "Walk", recurrence=Recurrence.DAILY)  # daily, so completion is tied to an exact day
+    add_task(at, "Walk", recurrence=Recurrence.DAILY)
     pet = owner_of(at).pets[0]
     task = pet.tasks[0]
     assert at.button(key=f"done_{task.id}").disabled is False
 
     at.button(key=f"done_{task.id}").click().run()
-    assert task.last_completed == date.today()
-    assert task.is_completed(date.today())
-    assert at.button(key=f"done_{task.id}").disabled is True
 
+    assert task.completed_on == date.today() and task.is_completed()
+    assert len(pet.tasks) == 2  # the new occurrence was added to the pet
+    nxt = pet.tasks[1]
+    assert nxt.start_date == date.today() + timedelta(days=1) and not nxt.is_completed()
+    assert any("next one is due" in s.value for s in at.success)
+    keys = [b.key for b in at.button]
+    assert f"done_{task.id}" not in keys and f"done_{nxt.id}" in keys  # the default "Open" filter hides the finished one
+
+    at.radio(key="filter_status").set_value("Done").run()
+    assert at.button(key=f"done_{task.id}").disabled is True  # it shows under "Done", already completed
+
+
+def test_done_button_on_a_one_off_task_creates_nothing_and_remove_deletes_a_task(at):
+    add_pet(at, "Rex")
+    add_task(at, "Vet visit")
+    pet = owner_of(at).pets[0]
+    task = pet.tasks[0]
+
+    at.button(key=f"done_{task.id}").click().run()
+    assert task.is_completed() and len(pet.tasks) == 1  # no next occurrence
+
+    at.radio(key="filter_status").set_value("All").run()
     at.button(key=f"remove_task_{task.id}").click().run()
     assert pet.tasks == []
+
+
+# ---------- sorting, filtering and conflict warnings in the UI ----------
+
+
+def listed_titles(at):
+    """Titles of the task-list rows, in the order shown."""
+    return [m.value.split("**")[1] for m in at.markdown if m.value.startswith("**") and " min," in m.value]
+
+
+def test_task_list_is_sorted_by_time_with_untimed_tasks_last(at):
+    add_pet(at, "Rex")
+    add_task(at, "Evening", timing="Preferred time", when=time(18, 0))
+    add_task(at, "Anytime")
+    add_task(at, "Noon", timing="Fixed time", when=time(12, 0))
+    add_task(at, "Early", timing="Fixed time", when=time(7, 0))
+
+    assert listed_titles(at) == ["Early", "Noon", "Evening", "Anytime"]
+
+
+def test_task_list_can_be_filtered_by_pet_and_by_status(at):
+    add_pet(at, "Rex")
+    add_pet(at, "Mochi", species="cat")
+    rex, mochi = owner_of(at).pets
+    add_task(at, "Walk", pet_id=rex.id)
+    add_task(at, "Brush", pet_id=mochi.id)
+    at.button(key=f"done_{rex.tasks[0].id}").click().run()
+    assert sorted(listed_titles(at)) == ["Brush"]  # default: open tasks only
+
+    at.radio(key="filter_status").set_value("All").run()
+    assert sorted(listed_titles(at)) == ["Brush", "Walk"]
+
+    select_pet(at, rex.id)
+    assert at.radio(key="filter_scope").options == ["All pets", "Rex only"]  # named after the selected tile
+    at.radio(key="filter_scope").set_value("selected").run()
+    assert listed_titles(at) == ["Walk"]
+
+    at.radio(key="filter_status").set_value("Open").run()
+    assert listed_titles(at) == [] and any("No tasks to show" in c.value for c in at.caption)
+
+
+def test_overlapping_fixed_time_tasks_show_a_conflict_warning_before_planning(at):
+    add_pet(at, "Rex")
+    add_pet(at, "Mochi", species="cat")
+    rex, mochi = owner_of(at).pets
+    add_task(at, "Walk", pet_id=rex.id, timing="Fixed time", when=time(9, 0), duration=30)
+    assert not any("Conflict" in w.value for w in at.warning)
+
+    add_task(at, "Brush", pet_id=mochi.id, timing="Fixed time", when=time(9, 15), duration=15)  # overlaps, other pet
+
+    conflicts = [w.value for w in at.warning if "Conflict" in w.value]
+    assert len(conflicts) == 1 and "different pets" in conflicts[0]
+    assert "'Walk'" in conflicts[0] and "'Brush'" in conflicts[0]
+    assert len(owner_of(at).get_all_tasks()) == 2  # a warning, not a refusal
 
 
 # ---------- owner availability ----------

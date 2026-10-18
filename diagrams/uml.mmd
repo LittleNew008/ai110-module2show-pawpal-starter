@@ -51,10 +51,13 @@ classDiagram
         +add_task(task) None
         +edit_task(task_id, **changes) None
         +remove_task(task_id) None
+        +complete_task(task_id, on) Task
         +get_tasks() list~Task~
     }
 
-    %% last_completed + start_date replace a single completed flag, which cannot work for recurring tasks.
+    %% Recurrence creates a new Task when a daily/weekly one is completed (mark_complete returns it);
+    %% each occurrence is open from start_date until completed_on is set. requested_time is
+    %% a property: fixed_time, else preferred_start, else None.
     class Task {
         +str title
         +int duration_minutes
@@ -66,11 +69,13 @@ classDiagram
         +bool required
         +str description
         +date start_date
-        +date last_completed
+        +date completed_on
         +str id
+        +time requested_time
         +is_due(on) bool
-        +is_completed(on) bool
-        +mark_complete(on) None
+        +is_completed() bool
+        +next_due_date(on) date
+        +mark_complete(on) Task
     }
 
     %% A task does not point back to its pet; PetTask carries the pair.
@@ -84,6 +89,10 @@ classDiagram
         +generate_plan(on) DailyPlan
         +filter_due_tasks(on) list~PetTask~
         +sort_tasks(tasks) list~PetTask~
+        +sort_by_time(tasks) list~PetTask~
+        +filter_tasks(tasks, pet_name, completed) list~PetTask~
+        +mark_task_complete(task_id, on) Task
+        +find_conflicts(on) list~str~
         +fit_to_available_time(tasks) scheduled and skipped lists
         +detect_conflicts(items) list of overlapping pairs
     }
@@ -124,6 +133,7 @@ classDiagram
     Task --> Priority
     Task --> Category
     Task --> Recurrence
+    Task ..> Task : next occurrence
     PetTask --> Pet
     PetTask --> Task
     Scheduler --> Owner : plans for

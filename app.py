@@ -13,6 +13,8 @@ from pawpal_system import Category, Owner, Pet, Priority, Recurrence, Scheduler,
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
 SPECIES = ["dog", "cat", "other"]
+SPECIES_ICONS = {"dog": "🐶", "cat": "🐱"}
+TILES_PER_ROW = 3
 TIMING_MODES = ["Flexible (earliest free slot)", "Preferred time", "Fixed time"]
 
 
@@ -40,9 +42,40 @@ def rerun_after(message: str) -> None:
     st.rerun()
 
 
-def pet_by_id(owner: Owner, pet_id: str) -> Pet:
-    """The pet with `pet_id`; ids are used instead of names because names can repeat."""
-    return next(p for p in owner.pets if p.id == pet_id)
+def selected_pet(owner: Owner) -> Pet | None:
+    """The pet whose tile is selected, falling back to the first pet if that one was removed."""
+    ids = [p.id for p in owner.pets]
+    if st.session_state.get("selected_pet_id") not in ids:
+        st.session_state.selected_pet_id = ids[0] if ids else None
+    return next((p for p in owner.pets if p.id == st.session_state.selected_pet_id), None)
+
+
+def select_pet(pet_id: str) -> None:
+    """Button callback: make the tile for `pet_id` the selected one."""
+    st.session_state.selected_pet_id = pet_id
+
+
+def pet_tile(owner: Owner, pet: Pet, is_selected: bool) -> None:
+    """One bordered tile: icon, name, details, task counts, and Select / Remove buttons."""
+    done = sum(1 for t in pet.tasks if t.is_completed())
+    details = " · ".join(x for x in [pet.species, pet.breed, f"{pet.age} yr" if pet.age is not None else ""] if x)
+    # The key lets the CSS below highlight the selected tile.
+    with st.container(border=True, key=f"tile-{'selected-' if is_selected else ''}{pet.id}"):
+        st.markdown(f"### {SPECIES_ICONS.get(pet.species, '🐾')} {pet.name}")
+        st.caption(details)
+        st.write(f"{len(pet.tasks) - done} open · {done} done")
+        st.button("✓ Selected" if is_selected else "Select", key=f"select_pet_{pet.id}",
+                  type="primary" if is_selected else "secondary", disabled=is_selected,
+                  on_click=select_pet, args=(pet.id,), width="stretch")
+        # on_click callbacks run before the next re-run, so the page redraws already updated.
+        st.button("Remove", key=f"remove_pet_{pet.id}", type="tertiary", on_click=owner.remove_pet,
+                  args=(pet.id,), width="stretch")
+
+
+def complete_task(task_id: str) -> None:
+    """Button callback: complete a task today; a daily or weekly one gets its next occurrence."""
+    next_task = Scheduler(get_owner()).mark_task_complete(task_id, date.today())
+    flash(f"Done. The next one is due {next_task.start_date:%A, %B %d}." if next_task else "Done.")
 
 
 def describe_task(task: Task, today: date) -> str:
@@ -56,7 +89,12 @@ def describe_task(task: Task, today: date) -> str:
         parts.append(f"prefers {task.preferred_start:%H:%M}")
     if task.recurrence is not Recurrence.ONCE:
         parts.append(task.recurrence.value)
-    status = " (done today)" if task.is_completed(today) else ""
+    if task.is_completed():
+        status = f" (done {task.completed_on:%b %d})"
+    elif task.start_date > today:
+        status = f" (starts {task.start_date:%b %d})"
+    else:
+        status = ""
     return f"**{task.title}**{status} - " + ", ".join(parts)
 
 
@@ -107,20 +145,28 @@ if add_pet:
         clean_name = pet_name.strip()
         if any(p.name.lower() == clean_name.lower() for p in owner.pets):
             raise ValueError(f"you already have a pet named {clean_name!r}")
-        owner.add_pet(Pet(clean_name, species, breed=breed.strip(), age=int(age)))
+        new_pet = Pet(clean_name, species, breed=breed.strip(), age=int(age))
+        owner.add_pet(new_pet)
     except ValueError as err:
         st.error(str(err))
     else:
+        select_pet(new_pet.id)  # so its tasks can be added straight away
         rerun_after(f"Added {clean_name}.")
 
+# Highlight the selected tile (containers get a CSS class from their key).
+st.markdown(
+    "<style>[class*='st-key-tile-selected'] {border: 2px solid #ff4b4b !important; border-radius: 0.6rem;}</style>",
+    unsafe_allow_html=True,
+)
+current_pet = selected_pet(owner)
 if not owner.pets:
     st.info("No pets yet. Add one above.")
-for pet in owner.pets:
-    c_label, c_remove = st.columns([5, 1])
-    details = ", ".join(x for x in [pet.species, pet.breed, f"{pet.age} yr" if pet.age is not None else ""] if x)
-    c_label.write(f"**{pet.name}** ({details}) - {len(pet.get_tasks())} task(s)")
-    # on_click callbacks run before the next re-run, so the list redraws already updated.
-    c_remove.button("Remove", key=f"remove_pet_{pet.id}", on_click=owner.remove_pet, args=(pet.id,))
+else:
+    st.caption("Select a pet's tile to add tasks for it.")
+for row_start in range(0, len(owner.pets), TILES_PER_ROW):
+    for column, pet in zip(st.columns(TILES_PER_ROW), owner.pets[row_start:row_start + TILES_PER_ROW]):
+        with column:
+            pet_tile(owner, pet, is_selected=current_pet is not None and pet.id == current_pet.id)
 
 # ---------------------------------------------------------------- tasks
 st.subheader("Tasks")
@@ -129,7 +175,8 @@ if not owner.pets:
 else:
     # Adding tasks is never blocked (the cap limits what gets scheduled, not what you
     # may record), so say so up front when today's tasks will not all fit.
-    due_minutes = sum(pt.task.duration_minutes for pt in Scheduler(owner).filter_due_tasks(today))
+    scheduler = Scheduler(owner)
+    due_minutes = sum(pt.task.duration_minutes for pt in scheduler.filter_due_tasks(today))
     capacity = owner.capacity_minutes()
     if due_minutes > capacity:
         st.warning(
@@ -139,9 +186,11 @@ else:
         )
     elif due_minutes:
         st.caption(f"Today: {due_minutes} of {capacity} available minutes are planned.")
+    for conflict in scheduler.find_conflicts(today):  # fixed-time tasks that overlap, any pets
+        st.warning(conflict)
 
-    labels = {p.id: f"{p.name} ({p.species})" for p in owner.pets}
-    task_pet_id = st.selectbox("Add a task for", list(labels), format_func=lambda pid: labels[pid], key="task_pet")
+    assert current_pet is not None  # there is at least one pet in this branch
+    st.markdown(f"Adding a task for **{current_pet.name}** (select another pet's tile above to change this).")
     with st.form("add_task_form", clear_on_submit=True):
         title = st.text_input("Task title", value="Morning walk", key="task_title")
         description = st.text_input("Description (optional)", key="task_description")
@@ -161,7 +210,7 @@ else:
         add_task = st.form_submit_button("Add task")
     if add_task:
         try:
-            pet_by_id(owner, task_pet_id).add_task(Task(
+            current_pet.add_task(Task(
                 title=title,
                 duration_minutes=int(duration),
                 priority=priority,
@@ -178,36 +227,44 @@ else:
         else:
             rerun_after(f"Added '{title.strip()}'.")
 
-    for pet in owner.pets:
-        st.markdown(f"**{pet.name}'s tasks**")
-        if not pet.get_tasks():
-            st.caption("No tasks yet.")
-        for task in pet.get_tasks():
-            c_text, c_done, c_remove = st.columns([6, 1, 1])
-            c_text.markdown(describe_task(task, today))
-            c_done.button("Done", key=f"done_{task.id}", on_click=task.mark_complete, args=(today,),
-                          disabled=task.is_completed(today))
-            c_remove.button("Remove", key=f"remove_task_{task.id}", on_click=pet.remove_task, args=(task.id,))
-            with st.expander(f"Edit '{task.title}'"):
-                with st.form(f"edit_{task.id}"):
-                    new_title = st.text_input("Title", value=task.title, key=f"edit_title_{task.id}")
-                    new_desc = st.text_input("Description", value=task.description, key=f"edit_desc_{task.id}")
-                    e1, e2, e3 = st.columns(3)
-                    new_duration = e1.number_input("Minutes", min_value=1, max_value=240,
-                                                   value=task.duration_minutes, key=f"edit_dur_{task.id}")
-                    new_priority = e2.selectbox("Priority", list(Priority), index=list(Priority).index(task.priority),
-                                                format_func=lambda p: p.name.title(), key=f"edit_pri_{task.id}")
-                    new_required = e3.checkbox("Required", value=task.required, key=f"edit_req_{task.id}")
-                    saved_edit = st.form_submit_button("Save changes")
-                if saved_edit:
-                    try:
-                        pet.edit_task(task.id, title=new_title, description=new_desc.strip(),
-                                      duration_minutes=int(new_duration), priority=new_priority,
-                                      required=new_required)
-                    except ValueError as err:
-                        st.error(str(err))
-                    else:
-                        rerun_after(f"Updated '{new_title.strip()}'.")
+    st.markdown("**Task list**")
+    f_scope, f_status = st.columns(2)
+    scope = f_scope.radio("Show tasks for", ["all", "selected"], horizontal=True, key="filter_scope",
+                          format_func=lambda v: "All pets" if v == "all" else f"{current_pet.name} only")
+    status_filter = f_status.radio("Show", ["Open", "Done", "All"], horizontal=True, key="filter_status")
+    shown = scheduler.sort_by_time(scheduler.filter_tasks(
+        pet_name=None if scope == "all" else current_pet.name,
+        completed={"Open": False, "Done": True, "All": None}[status_filter],
+    ))
+    if not shown:
+        st.caption("No tasks to show.")
+    for pt in shown:
+        pet, task = pt.pet, pt.task
+        c_text, c_done, c_remove = st.columns([6, 1, 1])
+        c_text.markdown(f"{describe_task(task, today)} - *{pet.name}*")
+        c_done.button("Done", key=f"done_{task.id}", on_click=complete_task, args=(task.id,),
+                      disabled=task.is_completed())
+        c_remove.button("Remove", key=f"remove_task_{task.id}", on_click=pet.remove_task, args=(task.id,))
+        with st.expander(f"Edit '{task.title}' ({pet.name})"):
+            with st.form(f"edit_{task.id}"):
+                new_title = st.text_input("Title", value=task.title, key=f"edit_title_{task.id}")
+                new_desc = st.text_input("Description", value=task.description, key=f"edit_desc_{task.id}")
+                e1, e2, e3 = st.columns(3)
+                new_duration = e1.number_input("Minutes", min_value=1, max_value=240,
+                                               value=task.duration_minutes, key=f"edit_dur_{task.id}")
+                new_priority = e2.selectbox("Priority", list(Priority), index=list(Priority).index(task.priority),
+                                            format_func=lambda p: p.name.title(), key=f"edit_pri_{task.id}")
+                new_required = e3.checkbox("Required", value=task.required, key=f"edit_req_{task.id}")
+                saved_edit = st.form_submit_button("Save changes")
+            if saved_edit:
+                try:
+                    pet.edit_task(task.id, title=new_title, description=new_desc.strip(),
+                                  duration_minutes=int(new_duration), priority=new_priority,
+                                  required=new_required)
+                except ValueError as err:
+                    st.error(str(err))
+                else:
+                    rerun_after(f"Updated '{new_title.strip()}'.")
 
 # ---------------------------------------------------------------- schedule
 st.divider()
