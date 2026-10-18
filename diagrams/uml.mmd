@@ -1,4 +1,8 @@
 classDiagram
+    %% PawPal+ final class diagram. It matches pawpal_system.py as built (tests/test_uml.py checks every
+    %% class, attribute, method and parameter name). Not shown: the module-level helpers to_minutes /
+    %% from_minutes (time arithmetic in whole minutes) and _overlapping_pairs (the sorted sweep both
+    %% conflict checks share). app.py and main.py are clients of these classes.
     class Priority {
         <<enumeration>>
         LOW
@@ -137,11 +141,19 @@ classDiagram
     PetTask --> Pet
     PetTask --> Task
     Scheduler --> Owner : plans for
-    Scheduler ..> PetTask : reads via Owner.get_all_tasks
+    Scheduler ..> PetTask : reads tasks
     Scheduler ..> DailyPlan : creates
+    Scheduler ..> ScheduledItem : places as
+    Scheduler ..> SkippedTask : skips as
+    Scheduler ..> Pet : complete_task
+    Scheduler ..> Task : next occurrence
     DailyPlan "1" --> "*" ScheduledItem : contains
     DailyPlan "1" --> "*" SkippedTask : contains
     ScheduledItem --> Task
     ScheduledItem --> Pet
     SkippedTask --> Task
     SkippedTask --> Pet
+
+    note for Scheduler "Reads tasks only through<br/>Owner.get_all_tasks.<br/>Planning order: required,<br/>then priority, then shorter.<br/>Fixed-time tasks go first;<br/>a clash keeps the more<br/>important task."
+    note for Task "Completing a daily or weekly<br/>task creates the next occurrence.<br/>An occurrence is due from<br/>start_date until completed_on is set."
+    note for Owner "day_start to day_end is the<br/>source of truth; available_minutes<br/>is an optional extra cap."

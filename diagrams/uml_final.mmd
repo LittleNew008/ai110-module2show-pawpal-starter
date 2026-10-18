@@ -1,0 +1,159 @@
+classDiagram
+    %% PawPal+ final class diagram. It matches pawpal_system.py as built (tests/test_uml.py checks every
+    %% class, attribute, method and parameter name). Not shown: the module-level helpers to_minutes /
+    %% from_minutes (time arithmetic in whole minutes) and _overlapping_pairs (the sorted sweep both
+    %% conflict checks share). app.py and main.py are clients of these classes.
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
+        +from_str(value) Priority
+    }
+
+    class Category {
+        <<enumeration>>
+        WALK
+        FEEDING
+        MEDS
+        ENRICHMENT
+        GROOMING
+        OTHER
+    }
+
+    class Recurrence {
+        <<enumeration>>
+        ONCE
+        DAILY
+        WEEKLY
+    }
+
+    %% Owner availability: the day_start-day_end window is the source of truth;
+    %% available_minutes is an optional extra cap (scheduler uses the tighter limit).
+    class Owner {
+        +str name
+        +time day_start
+        +time day_end
+        +int available_minutes
+        +dict preferred_times
+        +list~Pet~ pets
+        +add_pet(pet) None
+        +remove_pet(pet_id) None
+        +set_availability(start, end, available_minutes) None
+        +capacity_minutes() int
+        +get_all_tasks() list~PetTask~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +str special_needs
+        +list~Task~ tasks
+        +str id
+        +add_task(task) None
+        +edit_task(task_id, **changes) None
+        +remove_task(task_id) None
+        +complete_task(task_id, on) Task
+        +get_tasks() list~Task~
+    }
+
+    %% Recurrence creates a new Task when a daily/weekly one is completed (mark_complete returns it);
+    %% each occurrence is open from start_date until completed_on is set. requested_time is
+    %% a property: fixed_time, else preferred_start, else None.
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +Category category
+        +time preferred_start
+        +time fixed_time
+        +Recurrence recurrence
+        +bool required
+        +str description
+        +date start_date
+        +date completed_on
+        +str id
+        +time requested_time
+        +is_due(on) bool
+        +is_completed() bool
+        +next_due_date(on) date
+        +mark_complete(on) Task
+    }
+
+    %% A task does not point back to its pet; PetTask carries the pair.
+    class PetTask {
+        +Pet pet
+        +Task task
+    }
+
+    class Scheduler {
+        +Owner owner
+        +generate_plan(on) DailyPlan
+        +filter_due_tasks(on) list~PetTask~
+        +sort_tasks(tasks) list~PetTask~
+        +sort_by_time(tasks) list~PetTask~
+        +filter_tasks(tasks, pet_name, completed) list~PetTask~
+        +mark_task_complete(task_id, on) Task
+        +find_conflicts(on) list~str~
+        +fit_to_available_time(tasks) scheduled and skipped lists
+        +detect_conflicts(items) list of overlapping pairs
+    }
+
+    class DailyPlan {
+        +date on
+        +list~ScheduledItem~ scheduled_items
+        +list~SkippedTask~ skipped_tasks
+        +list~str~ warnings
+        +total_minutes() int
+        +flagged_tasks() list~SkippedTask~
+        +summary() str
+        +explain() str
+        +to_table() list~dict~
+    }
+
+    class ScheduledItem {
+        +Task task
+        +Pet pet
+        +time start
+        +time end
+        +str reason
+        +duration() int
+        +overlaps(other) bool
+    }
+
+    class SkippedTask {
+        +Task task
+        +Pet pet
+        +str reason
+        +bool flagged
+    }
+
+    Owner "1" --> "*" Pet : has
+    Owner ..> Category : preferred_times
+    Owner ..> PetTask : get_all_tasks
+    Pet "1" --> "*" Task : needs
+    Task --> Priority
+    Task --> Category
+    Task --> Recurrence
+    Task ..> Task : next occurrence
+    PetTask --> Pet
+    PetTask --> Task
+    Scheduler --> Owner : plans for
+    Scheduler ..> PetTask : reads tasks
+    Scheduler ..> DailyPlan : creates
+    Scheduler ..> ScheduledItem : places as
+    Scheduler ..> SkippedTask : skips as
+    Scheduler ..> Pet : complete_task
+    Scheduler ..> Task : next occurrence
+    DailyPlan "1" --> "*" ScheduledItem : contains
+    DailyPlan "1" --> "*" SkippedTask : contains
+    ScheduledItem --> Task
+    ScheduledItem --> Pet
+    SkippedTask --> Task
+    SkippedTask --> Pet
+
+    note for Scheduler "Reads tasks only through<br/>Owner.get_all_tasks.<br/>Planning order: required,<br/>then priority, then shorter.<br/>Fixed-time tasks go first;<br/>a clash keeps the more<br/>important task."
+    note for Task "Completing a daily or weekly<br/>task creates the next occurrence.<br/>An occurrence is due from<br/>start_date until completed_on is set."
+    note for Owner "day_start to day_end is the<br/>source of truth; available_minutes<br/>is an optional extra cap."

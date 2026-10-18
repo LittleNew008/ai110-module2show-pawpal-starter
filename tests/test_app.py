@@ -64,7 +64,16 @@ def add_task(at, title, *, pet_id=None, duration=20, timing=None, when=None, req
 
 
 def table_rows(at):
-    return at.table[0].value.to_dict("records")
+    """Rows of every table on the page, in order: the schedule first, then the 'Not scheduled' table."""
+    rows = []
+    for table in at.table:
+        rows.extend(table.value.to_dict("records"))
+    return rows
+
+
+def metrics(at):
+    """The totals shown above a plan, as {label: displayed value}."""
+    return {m.label: m.value for m in at.metric}
 
 
 # ---------- memory: the Owner lives in st.session_state ----------
@@ -353,7 +362,8 @@ def test_generate_schedule_shows_the_plan_and_stays_live_as_tasks_change(at):
     add_task(at, "Meds", timing="Fixed time", when=time(9, 0), duration=5)
     at.button(key="generate").click().run()
 
-    assert any("1 scheduled" in s.value for s in at.success)
+    assert metrics(at) == {"Scheduled": "1", "Care minutes": "5 / 720", "Not scheduled": "0"}
+    assert any("Everything fits" in s.value for s in at.success)
     rows = table_rows(at)
     assert [(r["task"], r["start"], r["end"], r["status"]) for r in rows] == [("Meds", "09:00", "09:05", "scheduled")]
 
@@ -382,7 +392,8 @@ def test_required_task_that_cannot_fit_is_flagged_with_a_warning(at):
     at.button(key="generate").click().run()
 
     assert [r["status"] for r in table_rows(at)] == ["scheduled", "FLAGGED"]
-    assert any("REQUIRED" in w.value and "Meds B" in w.value for w in at.warning)
+    assert any("Required task not scheduled" in e.value and "Meds B" in e.value for e in at.error)  # red, not amber
+    assert not at.success  # not "everything fits"
 
 
 def test_minutes_limit_warns_when_tasks_exceed_it_and_the_plan_skips_the_extra_task(at):
@@ -406,7 +417,8 @@ def test_minutes_limit_warns_when_tasks_exceed_it_and_the_plan_skips_the_extra_t
     rows = table_rows(at)
     assert [r["status"] for r in rows] == ["scheduled", "scheduled", "scheduled", "skipped"]
     assert "60-minute daily limit" in rows[3]["reason"]
-    assert any("3 scheduled (60 min), 1 skipped" in s.value for s in at.success)
+    assert metrics(at) == {"Scheduled": "3", "Care minutes": "60 / 60", "Not scheduled": "1"}
+    assert any("Did not fit today" in i.value and "Task 4" in i.value for i in at.info)
 
 
 def test_no_limit_means_no_warning_until_the_day_window_is_exceeded(at):
@@ -434,6 +446,74 @@ def test_generating_a_schedule_with_no_pets_at_all_does_not_crash(at):
 
     assert not at.exception and not at.table
     assert any("Nothing is due" in i.value for i in at.info)
+
+
+def test_a_clash_is_shown_as_an_amber_warning_that_says_what_happened_and_what_to_do(at):
+    add_pet(at, "Rex")
+    add_pet(at, "Mochi", species="cat")
+    rex, mochi = owner_of(at).pets
+    add_task(at, "Lunch", pet_id=rex.id, timing="Fixed time", when=time(12, 0), duration=10, priority=Priority.HIGH)
+    add_task(at, "Vet call", pet_id=mochi.id, timing="Fixed time", when=time(12, 0), duration=15)
+
+    # right after adding: the warning plus a plain-language explanation of the consequence and the fix
+    assert any("Conflict" in w.value for w in at.warning)
+    assert any("keeps the more important task" in c.value and "Edit one task's time" in c.value for c in at.caption)
+
+    at.button(key="generate").click().run()
+
+    clash = [w.value for w in at.warning if "Time clash, not scheduled" in w.value]
+    assert len(clash) == 1 and "Vet call" in clash[0] and "Mochi" in clash[0]  # names the task that lost out
+    assert "clashes with 'Lunch'" in clash[0] and "Edit its time" in clash[0]  # the cause and the fix
+    assert not at.error and not any("Everything fits" in s.value for s in at.success)
+    assert metrics(at) == {"Scheduled": "1", "Care minutes": "10 / 720", "Not scheduled": "1"}
+
+
+def test_the_schedule_and_the_not_scheduled_tasks_are_shown_in_separate_tables(at):
+    add_pet(at, "Rex")
+    add_task(at, "Walk", timing="Fixed time", when=time(9, 0), duration=30)
+    add_task(at, "Bath", timing="Fixed time", when=time(9, 10), duration=20)  # overlaps the walk
+    at.button(key="generate").click().run()
+
+    assert len(at.table) == 2
+    scheduled, skipped = (t.value.to_dict("records") for t in at.table)
+    # Same priority, so the shorter task is placed first and keeps the slot; the longer one is skipped.
+    assert [(r["task"], r["status"]) for r in scheduled] == [("Bath", "scheduled")]
+    assert [(r["task"], r["status"]) for r in skipped] == [("Walk", "skipped")]
+    assert "clashes with 'Bath'" in skipped[0]["reason"]
+
+
+def test_when_everything_fits_the_plan_says_so_with_no_warnings_or_extra_table(at):
+    add_pet(at, "Rex")
+    add_task(at, "Walk", duration=20)
+    add_task(at, "Feed", duration=10)
+    at.button(key="generate").click().run()
+
+    assert any("Everything fits: all 2 tasks are scheduled." in s.value for s in at.success)
+    assert not at.warning and not at.error and len(at.table) == 1
+    assert any("Schedule for" in m.value for m in at.markdown)
+
+
+def test_the_task_list_says_it_is_sorted_by_time(at):
+    add_pet(at, "Rex")
+    assert any("Sorted by time" in c.value for c in at.caption)
+
+
+# ---------- sample data ----------
+
+
+def test_the_sample_data_button_fills_an_empty_app_and_then_goes_away(at):
+    assert "load_sample" in [b.key for b in at.button]
+
+    at.button(key="load_sample").click().run()
+
+    owner = owner_of(at)
+    assert [p.name for p in owner.pets] == ["Biscuit", "Mochi"] and len(owner.get_all_tasks()) == 8
+    assert any("Loaded sample data" in s.value for s in at.success)
+    assert "load_sample" not in [b.key for b in at.button]  # only offered while the app is empty
+    assert any("Conflict" in w.value for w in at.warning)  # the sample deliberately includes a clash
+
+    at.button(key="generate").click().run()
+    assert not at.exception and metrics(at)["Not scheduled"] == "1"  # the clash leaves one task out
 
 
 def test_completed_tasks_drop_out_of_the_plan(at):

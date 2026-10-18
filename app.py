@@ -8,7 +8,8 @@ from datetime import date, time
 
 import streamlit as st
 
-from pawpal_system import Category, Owner, Pet, Priority, Recurrence, Scheduler, Task
+from main import build_owner as build_sample_owner  # the same sample data the command-line demo uses
+from pawpal_system import Category, DailyPlan, Owner, Pet, Priority, Recurrence, Scheduler, Task
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -70,6 +71,47 @@ def pet_tile(owner: Owner, pet: Pet, is_selected: bool) -> None:
         # on_click callbacks run before the next re-run, so the page redraws already updated.
         st.button("Remove", key=f"remove_pet_{pet.id}", type="tertiary", on_click=owner.remove_pet,
                   args=(pet.id,), width="stretch")
+
+
+def load_sample() -> None:
+    """Button callback: replace the empty owner with the demo owner (two pets, eight tasks)."""
+    sample = build_sample_owner()
+    st.session_state.owner = sample
+    st.session_state.selected_pet_id = sample.pets[0].id
+    flash("Loaded sample data: two pets and eight tasks, including two that clash at 12:00.")
+
+
+def show_plan(plan: DailyPlan, owner: Owner) -> None:
+    """Show a plan: totals, then problems (most serious first), then the schedule and what was skipped."""
+    scheduled = [row for row in plan.to_table() if row["status"] == "scheduled"]
+    not_scheduled = [row for row in plan.to_table() if row["status"] != "scheduled"]
+    m_scheduled, m_minutes, m_skipped = st.columns(3)
+    m_scheduled.metric("Scheduled", len(plan.scheduled_items))
+    m_minutes.metric("Care minutes", f"{plan.total_minutes()} / {owner.capacity_minutes()}")
+    m_skipped.metric("Not scheduled", len(plan.skipped_tasks))
+
+    # Most serious first: a required task left out is red, a clash is amber, a task that simply did not fit is blue.
+    for skipped in plan.flagged_tasks():
+        st.error(f"**Required task not scheduled:** {skipped.task.title} ({skipped.pet.name}). {skipped.reason}")
+    clashes = [s for s in plan.skipped_tasks if not s.flagged and s.task.fixed_time is not None]
+    for skipped in clashes:
+        st.warning(f"**Time clash, not scheduled:** {skipped.task.title} ({skipped.pet.name}). {skipped.reason}. "
+                   f"Edit its time, or the other task's, to keep both.")
+    did_not_fit = [s for s in plan.skipped_tasks if not s.flagged and s.task.fixed_time is None]
+    if did_not_fit:
+        st.info("**Did not fit today:**\n" + "\n".join(f"- {s.task.title} ({s.pet.name}): {s.reason}" for s in did_not_fit))
+    if not plan.skipped_tasks:
+        st.success(f"Everything fits: all {len(plan.scheduled_items)} tasks are scheduled.")
+
+    if scheduled:
+        st.table(scheduled)  # already in chronological order
+    else:
+        st.caption("Nothing could be scheduled.")
+    if not_scheduled:
+        st.markdown("**Not scheduled**")
+        st.table(not_scheduled)
+    with st.expander("Why this plan?"):
+        st.code(plan.explain(), language=None)
 
 
 def complete_task(task_id: str) -> None:
@@ -160,7 +202,8 @@ st.markdown(
 )
 current_pet = selected_pet(owner)
 if not owner.pets:
-    st.info("No pets yet. Add one above.")
+    st.info("No pets yet. Add one above, or try the app with ready-made sample data.")
+    st.button("Load sample data", key="load_sample", on_click=load_sample)
 else:
     st.caption("Select a pet's tile to add tasks for it.")
 for row_start in range(0, len(owner.pets), TILES_PER_ROW):
@@ -186,8 +229,12 @@ else:
         )
     elif due_minutes:
         st.caption(f"Today: {due_minutes} of {capacity} available minutes are planned.")
-    for conflict in scheduler.find_conflicts(today):  # fixed-time tasks that overlap, any pets
+    conflicts = scheduler.find_conflicts(today)  # fixed-time tasks that overlap, for any pets
+    for conflict in conflicts:
         st.warning(conflict)
+    if conflicts:
+        st.caption("You cannot do two things at once, so the schedule keeps the more important task and lists the "
+                   "other as not scheduled. Edit one task's time below to keep both.")
 
     assert current_pet is not None  # there is at least one pet in this branch
     st.markdown(f"Adding a task for **{current_pet.name}** (select another pet's tile above to change this).")
@@ -236,6 +283,7 @@ else:
         pet_name=None if scope == "all" else current_pet.name,
         completed={"Open": False, "Done": True, "All": None}[status_filter],
     ))
+    st.caption("Sorted by time; tasks with no set time come last.")
     if not shown:
         st.caption("No tasks to show.")
     for pt in shown:
@@ -276,12 +324,8 @@ if st.button("Generate schedule", key="generate"):
 if st.session_state.get("show_plan"):
     # The plan is rebuilt from the live Owner on every run, so it never goes stale.
     plan = Scheduler(owner).generate_plan(plan_date)
+    st.markdown(f"**Schedule for {plan_date:%A, %B %d}**")
     if not plan.scheduled_items and not plan.skipped_tasks:
         st.info("Nothing is due on this date. Add tasks above, or pick another date.")
     else:
-        st.success(plan.summary())
-        for warning in plan.warnings:
-            st.warning(warning)
-        st.table(plan.to_table())
-        with st.expander("Why this plan?"):
-            st.code(plan.explain(), language=None)
+        show_plan(plan, owner)
