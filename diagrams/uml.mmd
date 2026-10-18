@@ -4,6 +4,7 @@ classDiagram
         LOW
         MEDIUM
         HIGH
+        +from_str(value) Priority
     }
 
     class Category {
@@ -30,12 +31,12 @@ classDiagram
         +time day_start
         +time day_end
         +int available_minutes
-        +dict preferences
+        +dict preferred_times
         +list~Pet~ pets
         +add_pet(pet) None
-        +remove_pet(pet) None
+        +remove_pet(pet_id) None
         +set_availability(start, end) None
-        +get_all_tasks() list of pet-task pairs
+        +get_all_tasks() list~PetTask~
     }
 
     class Pet {
@@ -45,12 +46,14 @@ classDiagram
         +int age
         +str special_needs
         +list~Task~ tasks
+        +str id
         +add_task(task) None
         +edit_task(task_id, **changes) None
         +remove_task(task_id) None
         +get_tasks() list~Task~
     }
 
+    %% last_completed + start_date replace a single completed flag, which cannot work for recurring tasks.
     class Task {
         +str title
         +int duration_minutes
@@ -60,27 +63,35 @@ classDiagram
         +time fixed_time
         +Recurrence recurrence
         +bool required
-        +bool completed
+        +str description
+        +date start_date
+        +date last_completed
         +str id
         +is_due(on) bool
-        +mark_complete() None
-        +priority_score() int
+        +is_completed(on) bool
+        +mark_complete(on) None
+    }
+
+    %% A task does not point back to its pet; PetTask carries the pair.
+    class PetTask {
+        +Pet pet
+        +Task task
     }
 
     class Scheduler {
         +Owner owner
         +generate_plan(on) DailyPlan
-        +filter_due_tasks(on) list of pet-task pairs
-        +sort_tasks(tasks) list of pet-task pairs
+        +filter_due_tasks(on) list~PetTask~
+        +sort_tasks(tasks) list~PetTask~
         +fit_to_available_time(tasks) scheduled and skipped lists
         +detect_conflicts(items) list of overlapping pairs
-        +explain_choice(task, scheduled) str
     }
 
     class DailyPlan {
         +date on
         +list~ScheduledItem~ scheduled_items
         +list~SkippedTask~ skipped_tasks
+        +list~str~ warnings
         +total_minutes() int
         +flagged_tasks() list~SkippedTask~
         +summary() str
@@ -106,11 +117,16 @@ classDiagram
     }
 
     Owner "1" --> "*" Pet : has
+    Owner ..> Category : preferred_times
+    Owner ..> PetTask : get_all_tasks
     Pet "1" --> "*" Task : needs
     Task --> Priority
     Task --> Category
     Task --> Recurrence
+    PetTask --> Pet
+    PetTask --> Task
     Scheduler --> Owner : plans for
+    Scheduler ..> PetTask : reads via Owner.get_all_tasks
     Scheduler ..> DailyPlan : creates
     DailyPlan "1" --> "*" ScheduledItem : contains
     DailyPlan "1" --> "*" SkippedTask : contains
