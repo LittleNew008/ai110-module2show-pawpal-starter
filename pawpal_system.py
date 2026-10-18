@@ -6,11 +6,14 @@ arithmetic.
 """
 
 import dataclasses
+import json
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import date, time, timedelta
 from enum import Enum
 from itertools import combinations
+from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
@@ -39,6 +42,33 @@ def _fmt(minutes: int) -> str:
 
 def _new_id() -> str:
     return uuid4().hex
+
+
+# Version of the data.json layout; bump it if the layout changes so old files are rejected clearly.
+DATA_VERSION = 1
+
+
+def _iso(value: date | time | None) -> str | None:
+    """A date or time as ISO text for JSON (None stays None)."""
+    return None if value is None else value.isoformat()
+
+
+def _parse(parser, text):
+    """Apply `parser` (such as date.fromisoformat) to ISO text, passing None through."""
+    return None if text is None else parser(text)
+
+
+def _describe(err: Exception) -> str:
+    """A short readable reason for a data error (a bare KeyError would just say 'title')."""
+    return f"missing field {err.args[0]!r}" if isinstance(err, KeyError) else str(err)
+
+
+def _enum_by_name(enum_cls: type[Enum], name: str):
+    """Look up an enum member by name, with a readable error for bad data."""
+    try:
+        return enum_cls[name]
+    except KeyError:
+        raise ValueError(f"unknown {enum_cls.__name__} {name!r}") from None
 
 
 class Priority(Enum):
@@ -154,6 +184,45 @@ class Task:
             return None
         return dataclasses.replace(self, id=_new_id(), start_date=next_due, completed_on=None)
 
+    def to_dict(self) -> dict:
+        """The task as plain JSON-safe data: enums by name, times and dates as ISO text."""
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority.name,
+            "category": self.category.name,
+            "recurrence": self.recurrence.name,
+            "required": self.required,
+            "preferred_start": _iso(self.preferred_start),
+            "fixed_time": _iso(self.fixed_time),
+            "start_date": self.start_date.isoformat(),
+            "completed_on": _iso(self.completed_on),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Task":
+        """Rebuild a task from `to_dict` data. It goes through the constructor, so all validation
+        runs again; any problem is raised as a ValueError that names the task."""
+        try:
+            return cls(
+                title=data["title"],
+                duration_minutes=data["duration_minutes"],
+                priority=_enum_by_name(Priority, data.get("priority", "MEDIUM")),
+                category=_enum_by_name(Category, data.get("category", "OTHER")),
+                preferred_start=_parse(time.fromisoformat, data.get("preferred_start")),
+                fixed_time=_parse(time.fromisoformat, data.get("fixed_time")),
+                recurrence=_enum_by_name(Recurrence, data.get("recurrence", "ONCE")),
+                required=bool(data.get("required", False)),
+                description=data.get("description", ""),
+                start_date=date.fromisoformat(data["start_date"]),
+                completed_on=_parse(date.fromisoformat, data.get("completed_on")),
+                id=data.get("id") or _new_id(),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError) as err:
+            raise ValueError(f"invalid task {data.get('title')!r}: {_describe(err)}") from err
+
 
 # Fields Pet.edit_task may change; `id` is deliberately excluded.
 EDITABLE_TASK_FIELDS = frozenset(
@@ -237,6 +306,36 @@ class Pet:
         """A copy of the task list (the Task objects themselves are shared)."""
         return list(self.tasks)
 
+    def to_dict(self) -> dict:
+        """The pet and all its tasks as plain JSON-safe data."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "species": self.species,
+            "breed": self.breed,
+            "age": self.age,
+            "special_needs": self.special_needs,
+            "tasks": [task.to_dict() for task in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Pet":
+        """Rebuild a pet and its tasks from `to_dict` data (validated; ValueError on bad data)."""
+        try:
+            pet = cls(
+                name=data["name"],
+                species=data["species"],
+                breed=data.get("breed", ""),
+                age=data.get("age"),
+                special_needs=data.get("special_needs", ""),
+                id=data.get("id") or _new_id(),
+            )
+            for task_data in data.get("tasks", []):
+                pet.add_task(Task.from_dict(task_data))  # add_task also rejects duplicate ids
+        except (KeyError, TypeError, ValueError, AttributeError) as err:
+            raise ValueError(f"invalid pet {data.get('name')!r}: {_describe(err)}") from err
+        return pet
+
 
 @dataclass
 class Owner:
@@ -301,6 +400,69 @@ class Owner:
         objects (completing one is visible everywhere).
         """
         return [PetTask(pet, task) for pet in self.pets for task in pet.tasks]
+
+    def to_dict(self) -> dict:
+        """The owner, their settings, and every pet with its tasks, as plain JSON-safe data."""
+        return {
+            "name": self.name,
+            "day_start": self.day_start.isoformat(),
+            "day_end": self.day_end.isoformat(),
+            "available_minutes": self.available_minutes,
+            "preferred_times": {category.name: t.isoformat() for category, t in self.preferred_times.items()},
+            "pets": [pet.to_dict() for pet in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Owner":
+        """Rebuild an owner from `to_dict` data. The constructor validates the window and name, and
+        pets and tasks are re-validated as they are added, so bad data raises a ValueError."""
+        try:
+            owner = cls(
+                name=data["name"],
+                day_start=time.fromisoformat(data["day_start"]),
+                day_end=time.fromisoformat(data["day_end"]),
+                available_minutes=data.get("available_minutes"),
+                preferred_times={_enum_by_name(Category, name): time.fromisoformat(text)
+                                 for name, text in data.get("preferred_times", {}).items()},
+            )
+            for pet_data in data.get("pets", []):
+                owner.add_pet(Pet.from_dict(pet_data))  # add_pet also rejects duplicate ids
+        except (KeyError, TypeError, ValueError, AttributeError) as err:
+            raise ValueError(f"invalid owner data: {_describe(err)}") from err
+        return owner
+
+    def save_to_json(self, path: str | os.PathLike = "data.json") -> None:
+        """Save the owner, pets and tasks to a JSON file so they survive between runs.
+
+        The file is written to a temporary name and then moved over the real one, so a crash or a
+        full disk during the write can never leave a half-written data file behind."""
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps({"version": DATA_VERSION, "owner": self.to_dict()}, indent=2, ensure_ascii=False) + "\n"
+        temporary = target.with_name(target.name + ".tmp")
+        try:
+            temporary.write_text(text, encoding="utf-8")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def load_from_json(cls, path: str | os.PathLike = "data.json") -> "Owner":
+        """Load an owner saved by `save_to_json`.
+
+        A missing file raises FileNotFoundError (callers usually treat that as "first run").
+        Anything wrong with the contents (not JSON, the wrong version, a missing field, a value the
+        classes reject) raises a ValueError with a readable reason, and nothing is half-loaded."""
+        text = Path(path).read_text(encoding="utf-8")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"{Path(path).name} is not valid JSON: {err}") from err
+        if not isinstance(payload, dict) or payload.get("version") != DATA_VERSION:
+            raise ValueError(f"{Path(path).name} is not a PawPal+ data file (expected version {DATA_VERSION})")
+        if not isinstance(payload.get("owner"), dict):
+            raise ValueError(f"{Path(path).name} has no owner data")
+        return cls.from_dict(payload["owner"])
 
 
 @dataclass
@@ -588,6 +750,35 @@ class Scheduler:
                 f"overlaps '{b.task.title}' ({b.pet.name}, {_fmt(b_start)}-{_fmt(b_end)})"
             )
         return warnings
+
+    def next_available_slot(
+        self, on: date, minutes: int, not_before: time | None = None
+    ) -> tuple[time, time] | None:
+        """The earliest free slot of `minutes` on `on`, as `(start, end)`, or None if there is none.
+
+        "Free" means free in the plan as it stands: the day window minus every task that plan
+        schedules, so a new task placed in the slot cannot clash with or move anything. The scan
+        goes through the free gaps in time order and takes the first one that is long enough, so
+        it finds the earliest slot, not just a slot. `not_before` skips anything earlier (a slot
+        may start part-way into a gap). The daily limit counts: if scheduling `minutes` more would
+        go over `available_minutes`, there is no slot. A slot may end exactly when the day ends.
+        """
+        if minutes <= 0:
+            raise ValueError(f"minutes must be positive, got {minutes}")
+        plan = self.generate_plan(on)
+        cap = self.owner.available_minutes
+        if cap is not None and plan.total_minutes() + minutes > cap:
+            return None
+        window_start = to_minutes(self.owner.day_start)
+        earliest = window_start if not_before is None else max(window_start, to_minutes(not_before))
+        free = [(window_start, to_minutes(self.owner.day_end))]
+        for item in plan.scheduled_items:
+            free = _carve(free, to_minutes(item.start), to_minutes(item.end))
+        for gap_start, gap_end in free:
+            start = max(gap_start, earliest)
+            if gap_end - start >= minutes:
+                return from_minutes(start), from_minutes(start + minutes)
+        return None
 
     def fit_to_available_time(
         self, tasks: list[PetTask]

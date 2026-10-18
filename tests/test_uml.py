@@ -52,11 +52,9 @@ def code_attrs(cls: type) -> set[str]:
 
 
 def code_methods(cls: type) -> dict[str, list[str]]:
-    if issubclass(cls, enum.Enum):
-        found = {n: getattr(cls, n) for n, raw in vars(cls).items()
-                 if not n.startswith("_") and isinstance(raw, (classmethod, staticmethod))}
-    else:
-        found = dict(inspect.getmembers(cls, inspect.isfunction))
+    """Public methods defined on the class itself, including class and static methods."""
+    found = {n: getattr(cls, n) for n, raw in vars(cls).items()
+             if isinstance(raw, (classmethod, staticmethod)) or inspect.isfunction(raw)}
     return {n: [p for p in inspect.signature(f).parameters if p not in ("self", "cls")]
             for n, f in found.items() if not n.startswith("_")}
 

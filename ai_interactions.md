@@ -4,6 +4,62 @@
 
 ---
 
+## Agent Workflow (Challenges 1 to 3)
+
+### What was asked
+
+One request covering three extra-credit challenges:
+
+1. **Advanced algorithmic capability:** a third algorithm beyond the basics (such as a next available slot or weighted prioritization), plus this "Agent Workflow" section.
+2. **Data persistence:** remember pets and tasks between runs in a `data.json`, with `save_to_json` and `load_from_json` in `pawpal_system.py`, a README explanation of the workflow and the files changed, and a question to the assistant about marshmallow versus a custom dictionary conversion.
+3. **Professional UI and output formatting:** color-coded status indicators, emoji for task types, or structured CLI tables (for example with `tabulate`).
+
+### Files modified or added
+
+| File | New / changed | What changed |
+|---|---|---|
+| `pawpal_system.py` | changed | `Scheduler.next_available_slot` (challenge 1); `to_dict` / `from_dict` on `Task`, `Pet`, `Owner`, `Owner.save_to_json`, `Owner.load_from_json`, `DATA_VERSION` and helpers (challenge 2) |
+| `display.py` | **new** | Emoji, color-coded badges, status text and the table rows and `tabulate` renderer shared by the app and the terminal (challenge 3) |
+| `app.py` | changed | Loads `data.json` on first use, autosaves at the end of every run, a "Saved data" panel with a confirmed "Clear all data"; a "Find a free slot" panel and free-slot suggestions in clash messages; emoji, color and the new tables; wide layout |
+| `main.py` | changed | Terminal tables with `tabulate`; a next-free-slot step; a save-and-reload step using a temporary folder |
+| `requirements.txt` | changed | Added `tabulate` and `wcwidth` |
+| `.gitignore` | changed | Ignores `data.json`, `data.json.tmp`, `data.json.damaged` |
+| `diagrams/uml_final.mmd`, `diagrams/uml.mmd`, `diagrams/uml_final.png` | changed | New methods; the diagram re-rendered |
+| `tests/test_pawpal.py` | changed | Persistence tests (round trips, damaged files, safe writes) and next-slot tests (including a brute-force comparison) |
+| `tests/test_app.py` | changed | An automatic temporary data file for every test; persistence, free-slot and formatting tests; helpers adapted to the decorated tables |
+| `tests/test_display.py`, `tests/test_main.py` | **new** | Formatting unit tests; smoke tests for the terminal demo |
+| `tests/test_uml.py` | changed | Now sees class methods such as `from_dict` and `load_from_json` |
+| `screenshots/` | changed | Four screenshots retaken or added (including the free-slot panel) |
+| `README.md`, `reflection.md`, `ai_interactions.md` | changed | Features, extra-credit overview, Data persistence section, updated walkthrough, outputs and counts; design-change entries 38 to 41; this section |
+
+### What the agent completed
+
+- **Challenge 1.** `Scheduler.next_available_slot(on, minutes, not_before=None)`: the earliest free gap that fits in the day's plan, respecting the day window and the daily limit, usable both as a panel in the app and in clash messages. 50 backend tests plus 5 in the app, including a brute-force comparison on 40 random days and a check that a task fixed at the returned slot is scheduled exactly there with nothing else moving.
+- **Challenge 2.** Saving and loading with custom dictionary conversion (asked about marshmallow, it chose a hand-written conversion and explained why: the classes already validate themselves in their constructors, so rebuilding through them re-runs every rule, and no new dependency is needed), atomic writes, a version field, autosave in the app, and a damaged file moved aside instead of overwritten. 28 persistence tests in the backend plus 9 in the app.
+- **Challenge 3.** `display.py` and its use in the app and the terminal, with every symbol checked to be one code point and two cells wide so tables stay aligned; 37 display tests and 4 demo tests.
+- **Verification.** 314 tests pass. Thirty deliberate bugs injected into the new code were each caught by at least one test. The updated UML was re-rendered and inspected, and the real app was screenshotted in a headless browser and the screenshots looked at.
+
+### Manual corrections
+
+- **By you:** none were reported to the agent in this round. The round was direction and decisions (which challenges, and the instruction to document them); if you hand-edited anything, add it here.
+- **By the agent, to its own work (found by running and looking, not by being told):**
+  1. The first free-slot hint on clash messages suggested the earliest slot of the day (08:00) to a task that wanted 12:00; it now searches after the requested time.
+  2. Its first "no free slot" result in the app was a warning; it is an info message, because a search that finds nothing is not an alarm.
+  3. Several of its new tests were wrong: a wrong default (the form's category defaults to Walk, not Other), a regular expression that treated `+` in "PawPal+" as a quantifier, a check that counted empty lines as table lines (`"" in "╭│├╰"` is true), a miscounted number of tables (7, not 8), and two assertions hedged with `or`. Each was fixed in the test after confirming the app was right.
+  4. It learned from a failing test that Streamlit turns a leading emoji in an alert into the alert's icon, and changed the assertion.
+  5. Its first screenshots cut off the left edge and the bottom of the page and showed the tables wrapping; it fixed the crop and moved the app to the wide layout.
+  6. Because the app now writes to disk, it pointed the screenshot script at a scratch data file before its first run and gave every test an automatic temporary file, so nothing could touch a real `data.json`.
+
+### Decisions the agent made without asking (please review)
+
+- Custom dictionary conversion instead of marshmallow.
+- `data.json` is in `.gitignore` (it is your own data). If you want a sample data file committed for reviewers, remove those lines and commit one.
+- Autosave on every change (no Save button), and a strict load that rejects the whole file on one bad value.
+- A new `display.py` module, two new dependencies (`tabulate`, `wcwidth`), and the app's switch to the wide layout.
+- The "Clear all data" button (with a confirmation) in a "Saved data" panel.
+
+---
+
 ## Agent Workflow (SF7)
 
 > Document your experience using an AI agent (e.g., Cursor Agent, Claude, Copilot) to make multi-step changes autonomously.
@@ -93,10 +149,11 @@ Design the main objects for the PawPal+ pet care app described in the README (wh
     - **Step 4 (reflection):** completed section 5 and added section 3c (AI strategy) with the brief's four questions, plus design-change entries 34 to 37. One answer needs your attention: the brief asks how separate chat sessions helped, but every phase here ran in one continuing session, so the reflection says that plainly and reports what was observed instead of inventing a benefit. If you did use other sessions, change that paragraph.
     - **Verification:** 177 tests pass (130 backend, 32 UI, 15 UML). Seven deliberate bugs in the new plan presentation and five kinds of drift for the UML test were each caught. The uml/README/sample outputs match real runs.
     - **Not done or not verified:** nothing is committed; the UI has had no review by a person in a normal browser beyond your earlier hand test; the README's screenshots are of the sample data, not of data you entered.
+24. Asked to add the three extra-credit challenges: a third algorithm, persistence to `data.json`, and professional formatting. The full account (files modified, what was asked, what was completed, corrections, and the decisions made without asking) is in the "Agent Workflow (Challenges 1 to 3)" section at the top of this file. In short: it added `Scheduler.next_available_slot`, `Owner.save_to_json` / `load_from_json` with autosave in the app, and a shared `display.py` with `tabulate` tables, emoji and color-coded badges, plus the tests (314 pass), the updated diagram, retaken screenshots, and the documentation.
 
 **What did you have to verify or fix manually?**
 
-Reviewing the proposed design. The agent recommended that a required task push out lower-priority tasks; I chose flagging instead. After step 23 the whole suite is 177 passing tests (130 backend, 32 headless UI, 15 UML), but the app has had only a brief hand test (which found the step 19 problem) plus `AppTest`, a server start-up check and one headless-browser screenshot, and the random tests check invariants, not plan quality. Still to check:
+Reviewing the proposed design. The agent recommended that a required task push out lower-priority tasks; I chose flagging instead. After step 24 the whole suite is 314 passing tests (208 backend, 50 headless UI, 37 display, 15 UML, 4 demo), but the app has had only a brief hand test (which found the step 19 problem) plus `AppTest`, a server start-up check and one headless-browser screenshot, and the random tests check invariants, not plan quality. Still to check:
 - (Resolved in step 21) The Mermaid diagram was rendered and inspected; it is valid and readable.
 - That the agent's own choices within "apply all fixes" and in the cap handling (see the scope notes) are the ones wanted.
 - Whether `__pycache__/pawpal_system.cpython-314.pyc`, which is tracked in git, should be removed from the repo.

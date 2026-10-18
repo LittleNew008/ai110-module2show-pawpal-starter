@@ -3,3 +3,7 @@ __pycache__/
 .venv_new/
 .pytest_cache/
 .DS_Store
+# your pets and tasks (saved by the app); not part of the project
+data.json
+data.json.tmp
+data.json.damaged

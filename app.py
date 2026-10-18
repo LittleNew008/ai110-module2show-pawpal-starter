@@ -4,32 +4,89 @@ All planning logic lives in pawpal_system.py. This file only collects input,
 calls those classes, and shows the result.
 """
 
+import json
+import os
 from datetime import date, time
+from pathlib import Path
 
 import streamlit as st
 
+import display
 from main import build_owner as build_sample_owner  # the same sample data the command-line demo uses
 from pawpal_system import Category, DailyPlan, Owner, Pet, Priority, Recurrence, Scheduler, Task
 
-st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
+st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="wide")
 
 SPECIES = ["dog", "cat", "other"]
-SPECIES_ICONS = {"dog": "🐶", "cat": "🐱"}
 TILES_PER_ROW = 3
 TIMING_MODES = ["Flexible (earliest free slot)", "Preferred time", "Fixed time"]
 
 
+def data_file() -> Path:
+    """Where pets and tasks are saved: data.json next to app.py, or the file named by PAWPAL_DATA_FILE."""
+    return Path(os.environ.get("PAWPAL_DATA_FILE") or Path(__file__).resolve().parent / "data.json")
+
+
+def snapshot(owner: Owner) -> str:
+    """The owner's data as text, used to notice whether anything changed since the last save."""
+    return json.dumps(owner.to_dict(), sort_keys=True)
+
+
+def load_saved_owner() -> Owner:
+    """The owner saved last time, or a new empty one. A damaged file is set aside, never overwritten."""
+    path = data_file()
+    try:
+        owner = Owner.load_from_json(path)
+    except FileNotFoundError:
+        return Owner("Jordan")  # first run: nothing saved yet
+    except ValueError as err:
+        aside = path.with_name(path.name + ".damaged")
+        os.replace(path, aside)  # keep the bad file for inspection so the next save cannot destroy it
+        st.session_state.load_problem = f"Could not read {path.name} ({err}). It was kept as {aside.name} and the app started empty."
+        return Owner("Jordan")
+    except OSError as err:
+        st.session_state.load_problem = f"Could not open {path.name} ({err}). The app started empty."
+        return Owner("Jordan")
+    if owner.pets:
+        flash(f"{display.SAVED_ICON} Loaded {len(owner.pets)} pet(s) and {len(owner.get_all_tasks())} task(s) from {path.name}.")
+    return owner
+
+
 def get_owner() -> Owner:
-    """The Owner for this browser session, created on first use.
+    """The Owner for this browser session, loaded from disk on first use.
 
     Streamlit re-runs this whole script on every click, so a plain `Owner(...)`
     here would be rebuilt empty each time. `st.session_state` behaves like a
     dictionary that survives re-runs: if the key is already there we reuse the
-    stored object, otherwise we create it once.
+    stored object, otherwise we load it once (from data.json if it exists).
     """
     if "owner" not in st.session_state:
-        st.session_state.owner = Owner("Jordan")
+        st.session_state.owner = load_saved_owner()
+        st.session_state.saved_snapshot = snapshot(st.session_state.owner)  # nothing to save until it changes
     return st.session_state.owner
+
+
+def autosave(owner: Owner) -> None:
+    """Save to data.json if anything changed. Called at the end of every run, so every change is kept
+    whether it came from a form, a button callback or the sample-data button."""
+    current = snapshot(owner)
+    if current == st.session_state.get("saved_snapshot"):
+        return
+    try:
+        owner.save_to_json(data_file())
+    except OSError as err:
+        st.warning(f"Could not save to {data_file().name}: {err}")
+    else:
+        st.session_state.saved_snapshot = current
+
+
+def clear_all() -> None:
+    """Button callback: forget every pet and task (the next autosave writes the empty state)."""
+    st.session_state.owner = Owner("Jordan")
+    st.session_state.selected_pet_id = None
+    st.session_state.show_plan = False
+    st.session_state.confirm_clear = False
+    flash("All pets and tasks were cleared.")
 
 
 def flash(message: str) -> None:
@@ -62,7 +119,7 @@ def pet_tile(owner: Owner, pet: Pet, is_selected: bool) -> None:
     details = " · ".join(x for x in [pet.species, pet.breed, f"{pet.age} yr" if pet.age is not None else ""] if x)
     # The key lets the CSS below highlight the selected tile.
     with st.container(border=True, key=f"tile-{'selected-' if is_selected else ''}{pet.id}"):
-        st.markdown(f"### {SPECIES_ICONS.get(pet.species, '🐾')} {pet.name}")
+        st.markdown(f"### {display.pet_icon(pet.species)} {pet.name}")
         st.caption(details)
         st.write(f"{len(pet.tasks) - done} open · {done} done")
         st.button("✓ Selected" if is_selected else "Select", key=f"select_pet_{pet.id}",
@@ -81,10 +138,20 @@ def load_sample() -> None:
     flash("Loaded sample data: two pets and eight tasks, including two that clash at 12:00.")
 
 
+def slot_hint(scheduler: Scheduler, plan: DailyPlan, task: Task) -> str:
+    """A sentence suggesting where a task that lost out could go: the next free slot of its length on the
+    plan's day, searching after the time it asked for (if it asked for one), or saying there is none."""
+    minutes, after = task.duration_minutes, task.fixed_time
+    slot = scheduler.next_available_slot(plan.on, minutes, not_before=after)
+    where = f" after {after:%H:%M}" if after is not None else ""
+    if slot is None:
+        return f"{display.SLOT_ICON} No free {minutes}-minute slot is left{where or ' that day'}."
+    return f"{display.SLOT_ICON} The next free {minutes}-minute slot{where} is {slot[0]:%H:%M}–{slot[1]:%H:%M}."
+
+
 def show_plan(plan: DailyPlan, owner: Owner) -> None:
     """Show a plan: totals, then problems (most serious first), then the schedule and what was skipped."""
-    scheduled = [row for row in plan.to_table() if row["status"] == "scheduled"]
-    not_scheduled = [row for row in plan.to_table() if row["status"] != "scheduled"]
+    scheduler = Scheduler(owner)
     m_scheduled, m_minutes, m_skipped = st.columns(3)
     m_scheduled.metric("Scheduled", len(plan.scheduled_items))
     m_minutes.metric("Care minutes", f"{plan.total_minutes()} / {owner.capacity_minutes()}")
@@ -92,24 +159,26 @@ def show_plan(plan: DailyPlan, owner: Owner) -> None:
 
     # Most serious first: a required task left out is red, a clash is amber, a task that simply did not fit is blue.
     for skipped in plan.flagged_tasks():
-        st.error(f"**Required task not scheduled:** {skipped.task.title} ({skipped.pet.name}). {skipped.reason}")
+        st.error(f"{display.STATUS_FLAGGED.split()[0]} **Required task not scheduled:** {skipped.task.title} "
+                 f"({skipped.pet.name}). {skipped.reason} {slot_hint(scheduler, plan, skipped.task)}")
     clashes = [s for s in plan.skipped_tasks if not s.flagged and s.task.fixed_time is not None]
     for skipped in clashes:
-        st.warning(f"**Time clash, not scheduled:** {skipped.task.title} ({skipped.pet.name}). {skipped.reason}. "
-                   f"Edit its time, or the other task's, to keep both.")
+        st.warning(f"{display.CLASH_ICON} **Time clash, not scheduled:** {skipped.task.title} ({skipped.pet.name}). "
+                   f"{skipped.reason}. Edit its time, or the other task's, to keep both. "
+                   f"{slot_hint(scheduler, plan, skipped.task)}")
     did_not_fit = [s for s in plan.skipped_tasks if not s.flagged and s.task.fixed_time is None]
     if did_not_fit:
         st.info("**Did not fit today:**\n" + "\n".join(f"- {s.task.title} ({s.pet.name}): {s.reason}" for s in did_not_fit))
     if not plan.skipped_tasks:
-        st.success(f"Everything fits: all {len(plan.scheduled_items)} tasks are scheduled.")
+        st.success(f"{display.DONE_ICON} Everything fits: all {len(plan.scheduled_items)} tasks are scheduled.")
 
-    if scheduled:
-        st.table(scheduled)  # already in chronological order
+    if plan.scheduled_items:
+        st.table(display.schedule_rows(plan))  # already in chronological order
     else:
         st.caption("Nothing could be scheduled.")
-    if not_scheduled:
+    if plan.skipped_tasks:
         st.markdown("**Not scheduled**")
-        st.table(not_scheduled)
+        st.table(display.not_scheduled_rows(plan))
     with st.expander("Why this plan?"):
         st.code(plan.explain(), language=None)
 
@@ -121,23 +190,16 @@ def complete_task(task_id: str) -> None:
 
 
 def describe_task(task: Task, today: date) -> str:
-    """One-line summary of a task for the task list."""
-    parts = [f"{task.duration_minutes} min", f"{task.priority.name.lower()} priority", task.category.value]
+    """One line for the task list: category emoji, title, colour-coded status, then the details."""
+    parts = [f"{task.duration_minutes} min", display.priority_badge(task.priority), task.category.value]
     if task.required:
-        parts.append("REQUIRED")
-    if task.fixed_time is not None:
-        parts.append(f"fixed at {task.fixed_time:%H:%M}")
-    elif task.preferred_start is not None:
-        parts.append(f"prefers {task.preferred_start:%H:%M}")
+        parts.append(":red[**REQUIRED**]")
+    parts.append(display.when_text(task))
     if task.recurrence is not Recurrence.ONCE:
-        parts.append(task.recurrence.value)
-    if task.is_completed():
-        status = f" (done {task.completed_on:%b %d})"
-    elif task.start_date > today:
-        status = f" (starts {task.start_date:%b %d})"
-    else:
-        status = ""
-    return f"**{task.title}**{status} - " + ", ".join(parts)
+        parts.append(display.repeats_text(task))
+    status = display.task_status_markdown(task, today)
+    status = "" if status == "due today" else f" {status}"
+    return f"{display.category_icon(task.category)} **{task.title}**{status} - " + ", ".join(parts)
 
 
 owner = get_owner()
@@ -146,6 +208,8 @@ today = date.today()
 st.title("🐾 PawPal+")
 st.caption("Add your pets and their care tasks, then generate a plan for the day.")
 
+if "load_problem" in st.session_state:
+    st.error(st.session_state.pop("load_problem"))
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
 
@@ -236,6 +300,16 @@ else:
         st.caption("You cannot do two things at once, so the schedule keeps the more important task and lists the "
                    "other as not scheduled. Edit one task's time below to keep both.")
 
+    with st.expander(f"{display.SLOT_ICON} Find a free slot"):
+        c_len, c_after = st.columns(2)
+        slot_minutes = int(c_len.number_input("Length (minutes)", min_value=1, max_value=240, value=20, key="slot_minutes"))
+        slot_after = c_after.time_input("Not before", value=owner.day_start, key="slot_after")
+        slot = scheduler.next_available_slot(today, slot_minutes, not_before=slot_after)
+        if slot is None:
+            st.info("No free slot of that length is left today. Check the day's hours and the daily limit.")
+        else:
+            st.success(f"Next free {slot_minutes}-minute slot today: **{slot[0]:%H:%M}–{slot[1]:%H:%M}**")
+
     assert current_pet is not None  # there is at least one pet in this branch
     st.markdown(f"Adding a task for **{current_pet.name}** (select another pet's tile above to change this).")
     with st.form("add_task_form", clear_on_submit=True):
@@ -245,9 +319,10 @@ else:
         duration = c1.number_input("Duration (minutes)", min_value=1, max_value=240, value=20, key="task_duration")
         priority = c2.selectbox(
             "Priority", list(Priority), index=list(Priority).index(Priority.MEDIUM),
-            format_func=lambda p: p.name.title(), key="task_priority",
+            format_func=display.priority_badge, key="task_priority",
         )
-        category = c3.selectbox("Category", list(Category), format_func=lambda c: c.value.title(), key="task_category")
+        category = c3.selectbox("Category", list(Category), key="task_category",
+                                format_func=lambda c: f"{display.category_icon(c)} {c.value.title()}")
         c4, c5, c6 = st.columns(3)
         recurrence = c4.selectbox("Repeats", list(Recurrence), format_func=lambda r: r.value.title(), key="task_repeat")
         start_date = c5.date_input("Starts on", value=today, key="task_start")
@@ -329,3 +404,12 @@ if st.session_state.get("show_plan"):
         st.info("Nothing is due on this date. Add tasks above, or pick another date.")
     else:
         show_plan(plan, owner)
+
+# ---------------------------------------------------------------- saved data
+st.divider()
+with st.expander(f"{display.SAVED_ICON} Saved data"):
+    st.caption(f"Pets and tasks are saved automatically to `{data_file().name}` and loaded the next time you open the app.")
+    confirm = st.checkbox("I understand this deletes every pet and task", key="confirm_clear")
+    st.button("Clear all data", key="clear_all", disabled=not confirm, on_click=clear_all)
+
+autosave(owner)  # last, so a change made anywhere above is saved before the run ends

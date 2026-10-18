@@ -983,3 +983,300 @@ def test_a_large_busy_day_still_satisfies_every_planning_invariant():
     assert starts == sorted(starts)
     accounted = sorted([i.task.id for i in plan.scheduled_items] + [s.task.id for s in plan.skipped_tasks])
     assert accounted == sorted(pt.task.id for pt in owner.get_all_tasks())
+
+
+# =====================================================================
+# Challenge 2: saving to and loading from data.json
+# =====================================================================
+
+import json  # noqa: E402  (grouped with the persistence tests that use them)
+import re  # noqa: E402
+
+
+def _rich_owner():
+    """An owner that exercises every field: a cap, category preferences, seconds, completed and
+    recurring tasks, optional fields set and unset, and non-ASCII text."""
+    rex = Pet("Rex", "dog", breed="Border Collie", age=3, special_needs="allergic to chicken")
+    rex.add_task(Task("Morning walk", 30, priority="high", category=Category.WALK, preferred_start=t(7, 30),
+                      recurrence=Recurrence.DAILY, description="around the park"))
+    rex.add_task(Task("Heart meds", 5, required=True, fixed_time=time(8, 0, 30), category=Category.MEDS,
+                      recurrence=Recurrence.WEEKLY, start_date=MON))
+    done = Task("Bath", 20, category=Category.GROOMING, start_date=MON)
+    rex.add_task(done)
+    rex.complete_task(done.id, MON)
+    walk = rex.tasks[0]
+    rex.complete_task(walk.id, DAY)  # also creates the next occurrence of the daily walk
+    mochi = Pet("Mochí 🐱", "cat")  # no breed, no age, no tasks
+    owner = Owner("Jordan Ñoño", day_start=t(7), day_end=t(21, 30), available_minutes=150,
+                  preferred_times={Category.WALK: t(7, 30), Category.FEEDING: time(18, 0)})
+    owner.add_pet(rex)
+    owner.add_pet(mochi)
+    return owner
+
+
+def test_an_owner_survives_a_save_and_load_exactly(tmp_path):
+    owner = _rich_owner()
+    owner.save_to_json(tmp_path / "data.json")
+
+    loaded = Owner.load_from_json(tmp_path / "data.json")
+
+    assert loaded == owner  # every owner, pet and task field, including ids, times with seconds and None values
+    assert loaded is not owner and loaded.pets[0] is not owner.pets[0]  # new objects, not the originals
+
+
+def test_the_saved_file_is_readable_json_with_a_version_and_the_expected_shape(tmp_path):
+    owner = _rich_owner()
+    owner.save_to_json(tmp_path / "data.json")
+
+    text = (tmp_path / "data.json").read_text(encoding="utf-8")
+    payload = json.loads(text)
+
+    assert payload["version"] == 1 and set(payload) == {"version", "owner"}
+    saved = payload["owner"]
+    assert saved["name"] == "Jordan Ñoño" and "Ñoño" in text  # non-ASCII stays readable, not \\u escaped
+    assert saved["day_start"] == "07:00:00" and saved["available_minutes"] == 150
+    assert saved["preferred_times"] == {"WALK": "07:30:00", "FEEDING": "18:00:00"}
+    task = saved["pets"][0]["tasks"][1]
+    assert (task["priority"], task["category"], task["recurrence"]) == ("MEDIUM", "MEDS", "WEEKLY")
+    assert task["fixed_time"] == "08:00:30" and task["preferred_start"] is None and task["required"] is True
+    assert text.endswith("\n") and "\n  " in text  # indented, so a person can read and edit it
+
+
+def test_a_loaded_owner_plans_exactly_like_the_original_and_keeps_working(tmp_path):
+    owner = _rich_owner()
+    owner.save_to_json(tmp_path / "data.json")
+    loaded = Owner.load_from_json(tmp_path / "data.json")
+
+    assert plan_for(loaded, DAY) == plan_for(owner, DAY)  # same plan, same reasons
+
+    task = loaded.pets[0].tasks[-1]  # still live: it can be edited, completed and saved again
+    loaded.pets[0].edit_task(task.id, title="Renamed")
+    loaded.save_to_json(tmp_path / "again.json")
+    assert Owner.load_from_json(tmp_path / "again.json").pets[0].tasks[-1].title == "Renamed"
+
+
+def test_an_empty_owner_round_trips_and_the_default_file_name_is_data_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Owner("Solo").save_to_json()  # no path given
+
+    assert (tmp_path / "data.json").is_file()
+    assert Owner.load_from_json() == Owner("Solo")
+
+
+def test_saving_creates_missing_folders_and_replaces_an_existing_file_without_leaving_a_temp_file(tmp_path):
+    target = tmp_path / "deep" / "er" / "data.json"
+    Owner("First").save_to_json(target)
+    Owner("Second").save_to_json(target)
+
+    assert Owner.load_from_json(target).name == "Second"
+    assert sorted(p.name for p in target.parent.iterdir()) == ["data.json"]  # no data.json.tmp left behind
+
+
+def test_a_failed_save_leaves_the_old_file_untouched_and_no_temp_file(tmp_path, monkeypatch):
+    target = tmp_path / "data.json"
+    Owner("Original").save_to_json(target)
+
+    def broken_replace(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pawpal_system.os.replace", broken_replace)
+    with pytest.raises(OSError):
+        Owner("Replacement").save_to_json(target)
+
+    monkeypatch.undo()
+    assert Owner.load_from_json(target).name == "Original"  # the good file survived
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["data.json"]
+
+
+def test_loading_a_missing_file_raises_file_not_found(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        Owner.load_from_json(tmp_path / "nope.json")
+
+
+@pytest.mark.parametrize(
+    "contents, reason",
+    [
+        ("{ this is not json", "not valid JSON"),
+        ("[1, 2, 3]", "not a PawPal+ data file"),
+        ('{"version": 99, "owner": {}}', "not a PawPal+ data file"),
+        ('{"version": 1}', "no owner data"),
+        ('{"version": 1, "owner": "Jordan"}', "no owner data"),
+        ('{"version": 1, "owner": {}}', "missing field 'name'"),
+    ],
+)
+def test_a_damaged_data_file_is_rejected_with_a_readable_reason(tmp_path, contents, reason):
+    target = tmp_path / "data.json"
+    target.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        Owner.load_from_json(target)
+
+
+def _file_with(tmp_path, **changes):
+    """A valid one-pet, one-task data file, with `changes` merged into the owner, pet or task."""
+    task = {"title": "Walk", "duration_minutes": 20, "start_date": "2026-03-02"}
+    pet = {"name": "Rex", "species": "dog", "tasks": [task]}
+    owner = {"name": "J", "day_start": "08:00:00", "day_end": "20:00:00", "pets": [pet]}
+    for key, value in changes.items():
+        target, field = key.split("__")
+        {"owner": owner, "pet": pet, "task": task}[target][field] = value
+    path = tmp_path / "data.json"
+    path.write_text(json.dumps({"version": 1, "owner": owner}), encoding="utf-8")
+    return path
+
+
+def test_a_minimal_hand_written_file_loads_with_sensible_defaults(tmp_path):
+    loaded = Owner.load_from_json(_file_with(tmp_path))
+
+    task = loaded.pets[0].tasks[0]
+    assert (task.priority, task.category, task.recurrence, task.required) == (
+        Priority.MEDIUM, Category.OTHER, Recurrence.ONCE, False)
+    assert task.completed_on is None and task.fixed_time is None and task.description == ""
+    assert loaded.available_minutes is None and loaded.pets[0].breed == "" and loaded.pets[0].age is None
+
+
+@pytest.mark.parametrize(
+    "changes, reason",
+    [
+        ({"task__duration_minutes": 0}, "invalid pet 'Rex': invalid task 'Walk': duration_minutes must be positive"),
+        ({"task__duration_minutes": "20"}, "invalid task 'Walk'"),  # wrong type: still a ValueError, never a TypeError
+        ({"task__priority": "URGENT"}, "unknown Priority 'URGENT'"),
+        ({"task__category": "FLYING"}, "unknown Category 'FLYING'"),
+        ({"task__recurrence": "MONTHLY"}, "unknown Recurrence 'MONTHLY'"),
+        ({"task__fixed_time": "25:99"}, "invalid task 'Walk'"),
+        ({"task__start_date": "not a date"}, "invalid task 'Walk'"),
+        ({"task__title": "   "}, "task title must not be empty"),
+        ({"pet__name": ""}, "pet name must not be empty"),
+        ({"pet__age": -2}, "pet age must not be negative"),
+        ({"owner__day_end": "07:00:00"}, "day_end must be after day_start"),
+        ({"owner__available_minutes": 0}, "available_minutes must be positive"),
+    ],
+)
+def test_values_the_classes_reject_are_rejected_when_loading_too(tmp_path, changes, reason):
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        Owner.load_from_json(_file_with(tmp_path, **changes))
+
+
+def test_duplicate_ids_in_a_data_file_are_rejected(tmp_path):
+    path = _file_with(tmp_path)
+    data = json.loads(path.read_text())
+    pet = data["owner"]["pets"][0]
+    pet["tasks"].append(dict(pet["tasks"][0], id="same"))
+    pet["tasks"].append(dict(pet["tasks"][0], id="same"))
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="already on pet"):
+        Owner.load_from_json(path)
+
+    data["owner"]["pets"] = [dict(pet, id="p", tasks=[]), dict(pet, id="p", tasks=[])]
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="already on owner"):
+        Owner.load_from_json(path)
+
+
+def test_to_dict_output_is_plain_json_safe_data():
+    data = _rich_owner().to_dict()
+    assert json.loads(json.dumps(data)) == data  # survives a trip through JSON text unchanged
+
+
+# =====================================================================
+# Challenge 1: next available slot
+# =====================================================================
+
+
+def _slot(owner, minutes, on=DAY, **kwargs):
+    return Scheduler(owner).next_available_slot(on, minutes, **kwargs)
+
+
+def test_next_slot_on_an_empty_day_is_the_start_of_the_window():
+    assert _slot(make_owner(Pet("P", "dog")), 20) == (t(8), t(8, 20))
+
+
+def test_next_slot_goes_after_the_tasks_already_in_the_plan():
+    pet = Pet("P", "dog", tasks=[Task("fixed", 30, fixed_time=t(8)), Task("flex", 20)])  # plan: 08:00-08:30, 08:30-08:50
+    assert _slot(make_owner(pet), 15) == (t(8, 50), t(9, 5))
+
+
+def test_next_slot_finds_a_gap_between_tasks_only_if_it_is_long_enough():
+    pet = Pet("P", "dog", tasks=[Task("a", 30, fixed_time=t(8)), Task("b", 20, fixed_time=t(9))])  # 08:30-09:00 is free
+    owner = make_owner(pet)
+    assert _slot(owner, 30) == (t(8, 30), t(9))  # fits exactly
+    assert _slot(owner, 31) == (t(9, 20), t(9, 51))  # one minute too long for the gap: after the last task
+
+
+def test_next_slot_can_start_part_way_into_a_gap_with_not_before():
+    owner = make_owner(Pet("P", "dog", tasks=[Task("a", 30, fixed_time=t(8))]))  # free from 08:30
+    assert _slot(owner, 20, not_before=t(7)) == (t(8, 30), t(8, 50))  # before the window: no effect
+    assert _slot(owner, 20, not_before=t(8, 45)) == (t(8, 45), t(9, 5))  # part-way into the gap
+    assert _slot(owner, 20, not_before=t(19, 40)) == (t(19, 40), t(20))  # ends exactly when the day ends
+    assert _slot(owner, 20, not_before=t(19, 41)) is None  # one minute too late to fit
+    assert _slot(owner, 5, not_before=t(21)) is None  # after the day is over
+
+
+def test_next_slot_may_end_exactly_at_closing_time_but_not_run_past_it():
+    owner = make_owner(Pet("P", "dog"), start=t(8), end=t(9))
+    assert _slot(owner, 60) == (t(8), t(9))
+    assert _slot(owner, 61) is None
+
+
+def test_next_slot_respects_the_daily_minutes_limit():
+    owner = make_owner(Pet("P", "dog", tasks=[Task("a", 40)]), cap=60)
+    assert _slot(owner, 20) == (t(8, 40), t(9))  # 40 + 20 = 60, exactly the limit
+    assert _slot(owner, 21) is None  # 61 would break it, even though the day has plenty of room
+
+
+def test_next_slot_ignores_completed_and_not_yet_due_tasks():
+    done = Task("done", 60)
+    done.mark_complete(DAY)
+    later = Task("later", 60, start_date=date(2026, 4, 1))
+    assert _slot(make_owner(Pet("P", "dog", tasks=[done, later])), 30) == (t(8), t(8, 30))
+
+
+def test_next_slot_changes_nothing_and_gives_the_same_answer_twice():
+    pet = Pet("P", "dog", tasks=[Task("a", 30, fixed_time=t(9)), Task("b", 15)])
+    owner = make_owner(pet)
+    before = [(x.id, x.start_date, x.completed_on) for x in pet.tasks]
+
+    assert _slot(owner, 20) == _slot(owner, 20)
+    assert before == [(x.id, x.start_date, x.completed_on) for x in pet.tasks]
+
+
+@pytest.mark.parametrize("minutes", [0, -5])
+def test_next_slot_rejects_a_length_that_is_not_positive(minutes):
+    with pytest.raises(ValueError):
+        _slot(make_owner(), minutes)
+
+
+def _random_day(rng):
+    pets = []
+    for p in range(rng.randint(1, 2)):
+        tasks = []
+        for n in range(rng.randint(0, 7)):
+            fixed = from_minutes(rng.randrange(8 * 60, 19 * 60, 5)) if rng.random() < 0.4 else None
+            tasks.append(Task(f"p{p}t{n}", rng.choice([5, 10, 15, 30, 45, 90]), priority=rng.choice(list(Priority)),
+                              fixed_time=fixed))
+        pets.append(Pet(f"pet{p}", "dog", tasks=tasks))
+    return make_owner(*pets)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_next_slot_is_the_earliest_free_minute_run_by_brute_force_and_really_free(seed):
+    rng = random.Random(seed)
+    owner = _random_day(rng)
+    minutes = rng.choice([5, 10, 20, 35, 60, 120])
+    plan = plan_for(owner)
+    busy = {m for i in plan.scheduled_items for m in range(to_minutes(i.start), to_minutes(i.end))}
+    window = range(to_minutes(owner.day_start), to_minutes(owner.day_end))
+    expected = next((s for s in range(window.start, window.stop - minutes + 1)
+                     if not any(m in busy for m in range(s, s + minutes))), None)
+
+    slot = _slot(owner, minutes)
+
+    assert (None if slot is None else to_minutes(slot[0])) == expected  # the earliest, and None only if nothing fits
+    if slot is not None:
+        # "really free": a task fixed at that slot is scheduled exactly there and nothing else moves
+        owner.pets[0].add_task(Task("new", minutes, fixed_time=slot[0]))
+        after = plan_for(owner)
+        placed = {i.task.title: (i.start, i.end) for i in after.scheduled_items}
+        assert placed["new"] == slot
+        for item in plan.scheduled_items:
+            assert placed[item.task.title] == (item.start, item.end)

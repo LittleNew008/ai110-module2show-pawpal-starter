@@ -2,7 +2,8 @@ classDiagram
     %% PawPal+ final class diagram. It matches pawpal_system.py as built (tests/test_uml.py checks every
     %% class, attribute, method and parameter name). Not shown: the module-level helpers to_minutes /
     %% from_minutes (time arithmetic in whole minutes) and _overlapping_pairs (the sorted sweep both
-    %% conflict checks share). app.py and main.py are clients of these classes.
+    %% conflict checks share). app.py and main.py are clients of these classes; display.py turns their
+    %% results into emoji, badges and tables.
     class Priority {
         <<enumeration>>
         LOW
@@ -42,6 +43,10 @@ classDiagram
         +set_availability(start, end, available_minutes) None
         +capacity_minutes() int
         +get_all_tasks() list~PetTask~
+        +to_dict() dict
+        +from_dict(data) Owner
+        +save_to_json(path) None
+        +load_from_json(path) Owner
     }
 
     class Pet {
@@ -57,6 +62,8 @@ classDiagram
         +remove_task(task_id) None
         +complete_task(task_id, on) Task
         +get_tasks() list~Task~
+        +to_dict() dict
+        +from_dict(data) Pet
     }
 
     %% Recurrence creates a new Task when a daily/weekly one is completed (mark_complete returns it);
@@ -80,6 +87,8 @@ classDiagram
         +is_completed() bool
         +next_due_date(on) date
         +mark_complete(on) Task
+        +to_dict() dict
+        +from_dict(data) Task
     }
 
     %% A task does not point back to its pet; PetTask carries the pair.
@@ -97,6 +106,7 @@ classDiagram
         +filter_tasks(tasks, pet_name, completed) list~PetTask~
         +mark_task_complete(task_id, on) Task
         +find_conflicts(on) list~str~
+        +next_available_slot(on, minutes, not_before) tuple of start and end or None
         +fit_to_available_time(tasks) scheduled and skipped lists
         +detect_conflicts(items) list of overlapping pairs
     }
@@ -154,6 +164,6 @@ classDiagram
     SkippedTask --> Task
     SkippedTask --> Pet
 
-    note for Scheduler "Reads tasks only through<br/>Owner.get_all_tasks.<br/>Planning order: required,<br/>then priority, then shorter.<br/>Fixed-time tasks go first;<br/>a clash keeps the more<br/>important task."
+    note for Scheduler "Reads tasks only through<br/>Owner.get_all_tasks.<br/>Planning order: required,<br/>then priority, then shorter.<br/>Fixed-time tasks go first;<br/>a clash keeps the more<br/>important task. next_available_slot<br/>finds the earliest free gap."
     note for Task "Completing a daily or weekly<br/>task creates the next occurrence.<br/>An occurrence is due from<br/>start_date until completed_on is set."
-    note for Owner "day_start to day_end is the<br/>source of truth; available_minutes<br/>is an optional extra cap."
+    note for Owner "day_start to day_end is the<br/>source of truth; available_minutes<br/>is an optional extra cap.<br/>save_to_json / load_from_json keep<br/>everything in data.json."
