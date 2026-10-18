@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import date, time
 from enum import Enum
+from uuid import uuid4
 
 
 class Priority(Enum):
@@ -37,6 +38,9 @@ class Task:
     recurrence: Recurrence = Recurrence.ONCE
     required: bool = False
     completed: bool = False
+    # Unique identity: two tasks with identical fields are still different tasks,
+    # so Pet edits and removals look tasks up by this id.
+    id: str = field(default_factory=lambda: uuid4().hex)
 
     def is_due(self, on: date) -> bool:
         raise NotImplementedError
@@ -60,10 +64,10 @@ class Pet:
     def add_task(self, task: Task) -> None:
         raise NotImplementedError
 
-    def edit_task(self, task: Task, **changes) -> None:
+    def edit_task(self, task_id: str, **changes) -> None:
         raise NotImplementedError
 
-    def remove_task(self, task: Task) -> None:
+    def remove_task(self, task_id: str) -> None:
         raise NotImplementedError
 
     def get_tasks(self) -> list[Task]:
@@ -73,8 +77,11 @@ class Pet:
 @dataclass
 class Owner:
     name: str
+    # The window [day_start, day_end] is the source of truth for when care can happen.
     day_start: time = time(8, 0)
     day_end: time = time(20, 0)
+    # Optional extra cap on total care minutes per day (None = no cap beyond the
+    # window). The scheduler uses whichever limit is tighter.
     available_minutes: int | None = None
     preferences: dict = field(default_factory=dict)
     pets: list[Pet] = field(default_factory=list)

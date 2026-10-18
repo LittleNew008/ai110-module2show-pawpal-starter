@@ -19,7 +19,7 @@ Owner, Pet and Task are plain data (dataclasses) so they are easy to test; the S
 
 **b. Design changes**
 
-Pending implementation. Two changes so far. First, the UML was re-synced with the stubs (for example `DailyPlan.date` became `on`, and pet-task pair return types were written as plain text to keep Mermaid's parser happy). Second, made before any logic was written: `SkippedTask` gained a `flagged` field and `DailyPlan` gained `flagged_tasks()`, so a required task (for example meds) that cannot fit is surfaced as a warning rather than being silently dropped like an optional task.
+Pending implementation. Four design changes so far. Two came from checking the stubs against the UML: `Task` now has a unique `id` (identical tasks such as two "Feeding 10 min" entries compared equal, so `Pet.edit_task` and `remove_task` could hit the wrong one and now take a `task_id`), and `Owner` availability now has one source of truth (the `day_start`/`day_end` window) with `available_minutes` as an optional extra cap, because two overlapping fields left the scheduler without a rule for disagreement. The other two: First, the UML was re-synced with the stubs (for example `DailyPlan.date` became `on`, and pet-task pair return types were written as plain text to keep Mermaid's parser happy). Second, made before any logic was written: `SkippedTask` gained a `flagged` field and `DailyPlan` gained `flagged_tasks()`, so a required task (for example meds) that cannot fit is surfaced as a warning rather than being silently dropped like an optional task.
 
 ---
 
@@ -43,7 +43,7 @@ Claude Code was used for design brainstorming: reading the README and starter fi
 
 **b. Judgment and verification**
 
-The AI suggested that a required task that does not fit should push out lower-priority tasks to make room. I did not take that suggestion: I decided a required task that does not fit should instead be flagged, and the design was changed to match (`flagged` on `SkippedTask`). Verification of the stubs so far is limited to checking that the module imports; the scheduling behavior itself is not verified yet.
+The AI suggested that a required task that does not fit should push out lower-priority tasks to make room. I did not take that suggestion: I decided a required task that does not fit should instead be flagged, and the design was changed to match (`flagged` on `SkippedTask`). Verification of the stubs so far: the module imports, and a script confirmed that the names of every class, attribute, method and parameter in the stubs match the UML. The scheduling behavior itself is not verified yet. The same check turned up two open design questions (dataclass equality on `Task`, and two overlapping ways to express owner availability) that still need a decision.
 
 ---
 

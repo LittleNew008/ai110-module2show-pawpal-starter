@@ -23,6 +23,8 @@ classDiagram
         WEEKLY
     }
 
+    %% Owner availability: the day_start-day_end window is the source of truth;
+    %% available_minutes is an optional extra cap (scheduler uses the tighter limit).
     class Owner {
         +str name
         +time day_start
@@ -44,8 +46,8 @@ classDiagram
         +str special_needs
         +list~Task~ tasks
         +add_task(task) None
-        +edit_task(task, **changes) None
-        +remove_task(task) None
+        +edit_task(task_id, **changes) None
+        +remove_task(task_id) None
         +get_tasks() list~Task~
     }
 
@@ -59,6 +61,7 @@ classDiagram
         +Recurrence recurrence
         +bool required
         +bool completed
+        +str id
         +is_due(on) bool
         +mark_complete() None
         +priority_score() int
