@@ -351,11 +351,12 @@ else:
 
     st.markdown("**Task list**")
     f_scope, f_status = st.columns(2)
+    selected_name = current_pet.name  # (a lambda cannot rely on the assert above that it is not None)
     scope = f_scope.radio("Show tasks for", ["all", "selected"], horizontal=True, key="filter_scope",
-                          format_func=lambda v: "All pets" if v == "all" else f"{current_pet.name} only")
+                          format_func=lambda v: "All pets" if v == "all" else f"{selected_name} only")
     status_filter = f_status.radio("Show", ["Open", "Done", "All"], horizontal=True, key="filter_status")
     shown = scheduler.sort_by_time(scheduler.filter_tasks(
-        pet_name=None if scope == "all" else current_pet.name,
+        pet_name=None if scope == "all" else selected_name,
         completed={"Open": False, "Done": True, "All": None}[status_filter],
     ))
     st.caption("Sorted by time; tasks with no set time come last.")

@@ -12,7 +12,6 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, time, timedelta
 from enum import Enum
-from itertools import combinations
 from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
@@ -63,8 +62,13 @@ def _describe(err: Exception) -> str:
     return f"missing field {err.args[0]!r}" if isinstance(err, KeyError) else str(err)
 
 
-def _enum_by_name(enum_cls: type[Enum], name: str):
-    """Look up an enum member by name, with a readable error for bad data."""
+E = TypeVar("E", bound=Enum)
+
+
+def _enum_by_name(enum_cls: type[E], name: str) -> E:
+    """Look up a member of `enum_cls` by name, with a readable error for bad data.
+
+    Generic, so a type checker knows `_enum_by_name(Priority, ...)` is a `Priority`, not just an `Enum`."""
     try:
         return enum_cls[name]
     except KeyError:

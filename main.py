@@ -9,7 +9,7 @@ from datetime import date, time
 from pathlib import Path
 
 import display
-from pawpal_system import Category, DailyPlan, Owner, Pet, PetTask, Recurrence, Scheduler, Task
+from pawpal_system import Category, DailyPlan, Owner, Pet, PetTask, Priority, Recurrence, Scheduler, Task
 
 RULE = "=" * 72
 
@@ -22,33 +22,33 @@ def build_owner() -> Owner:
 
     # Tasks are added deliberately OUT of time order, so the sorting below has work to do.
     biscuit.add_task(Task(
-        "Evening fetch", 25, priority="medium", category=Category.ENRICHMENT,
+        "Evening fetch", 25, priority=Priority.MEDIUM, category=Category.ENRICHMENT,
         preferred_start=time(18, 0),
     ))
     biscuit.add_task(Task(
-        "Lunch feeding", 10, priority="high", category=Category.FEEDING,
+        "Lunch feeding", 10, priority=Priority.HIGH, category=Category.FEEDING,
         fixed_time=time(12, 0), recurrence=Recurrence.DAILY,
     ))
     mochi.add_task(Task(
-        "Laser-pointer play", 20, priority="medium", category=Category.ENRICHMENT,
+        "Laser-pointer play", 20, priority=Priority.MEDIUM, category=Category.ENRICHMENT,
         preferred_start=time(15, 30),
     ))
     biscuit.add_task(Task(
-        "Heart medication", 5, priority="high", category=Category.MEDS, required=True,
+        "Heart medication", 5, priority=Priority.HIGH, category=Category.MEDS, required=True,
         fixed_time=time(8, 0), recurrence=Recurrence.DAILY,
         description="One pill, hidden in a bit of cheese",
     ))
-    mochi.add_task(Task("Flea treatment", 5, priority="low"))  # no time at all
+    mochi.add_task(Task("Flea treatment", 5, priority=Priority.LOW))  # no time at all
     mochi.add_task(Task(
-        "Vet check-in call", 15, priority="medium",
+        "Vet check-in call", 15, priority=Priority.MEDIUM,
         fixed_time=time(12, 0),  # same time as Biscuit's lunch: a deliberate clash
     ))
     biscuit.add_task(Task(
-        "Morning walk", 30, priority="high", category=Category.WALK,
+        "Morning walk", 30, priority=Priority.HIGH, category=Category.WALK,
         preferred_start=time(7, 30), recurrence=Recurrence.DAILY,
     ))
     mochi.add_task(Task(
-        "Brush fur", 15, priority="low", category=Category.GROOMING,
+        "Brush fur", 15, priority=Priority.LOW, category=Category.GROOMING,
         preferred_start=time(9, 0), recurrence=Recurrence.WEEKLY,
     ))
 

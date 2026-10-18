@@ -13,10 +13,10 @@ TODAY = date(2026, 3, 2)
 
 def make_plan():
     rex = Pet("Rex", "dog", tasks=[
-        Task("Heart meds", 5, priority="high", required=True, category=Category.MEDS, fixed_time=time(8, 0), start_date=TODAY),
+        Task("Heart meds", 5, priority=Priority.HIGH, required=True, category=Category.MEDS, fixed_time=time(8, 0), start_date=TODAY),
         Task("Walk", 30, category=Category.WALK, fixed_time=time(8, 0), start_date=TODAY),  # clashes with the meds
     ])
-    mochi = Pet("Mochi", "cat", tasks=[Task("Brush", 15, priority="low", category=Category.GROOMING, start_date=TODAY)])
+    mochi = Pet("Mochi", "cat", tasks=[Task("Brush", 15, priority=Priority.LOW, category=Category.GROOMING, start_date=TODAY)])
     owner = Owner("J", pets=[rex, mochi])
     return owner, Scheduler(owner).generate_plan(TODAY)
 

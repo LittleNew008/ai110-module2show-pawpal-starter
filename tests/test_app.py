@@ -318,9 +318,16 @@ def test_done_button_on_a_one_off_task_creates_nothing_and_remove_deletes_a_task
 # ---------- sorting, filtering and conflict warnings in the UI ----------
 
 
+def bold_title(markdown):
+    """The text between the first pair of ** in a task row (the task's title)."""
+    match = re.search(r"\*\*(.+?)\*\*", markdown)
+    assert match, f"no bold title in {markdown!r}"
+    return match.group(1)
+
+
 def listed_titles(at):
     """Titles of the task-list rows, in the order shown."""
-    return [re.search(r"\*\*(.+?)\*\*", m.value).group(1) for m in at.markdown
+    return [bold_title(m.value) for m in at.markdown
             if " min," in m.value and "**" in m.value and not m.value.startswith("#")]
 
 
@@ -771,7 +778,7 @@ def test_status_is_colour_coded_green_when_done_blue_when_later_and_red_when_ove
     at.button(key=f"done_{finished.id}").click().run()
     at.radio(key="filter_status").set_value("All").run()
 
-    rows = {re.search(r"\*\*(.+?)\*\*", m.value).group(1): m.value for m in at.markdown if " min," in m.value and "**" in m.value}
+    rows = {bold_title(m.value): m.value for m in at.markdown if " min," in m.value and "**" in m.value}
 
     assert ":red[❗ overdue since" in rows["Overdue one"]
     assert ":blue[⏳ starts" in rows["Later one"]
