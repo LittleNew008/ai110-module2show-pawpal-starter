@@ -1,15 +1,117 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
-
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Category {
+        <<enumeration>>
+        WALK
+        FEEDING
+        MEDS
+        ENRICHMENT
+        GROOMING
+        OTHER
     }
 
-    ClassName --> AnotherClass : relationship
+    class Recurrence {
+        <<enumeration>>
+        ONCE
+        DAILY
+        WEEKLY
+    }
+
+    class Owner {
+        +str name
+        +time day_start
+        +time day_end
+        +int available_minutes
+        +dict preferences
+        +list~Pet~ pets
+        +add_pet(pet) None
+        +remove_pet(pet) None
+        +set_availability(start, end) None
+        +get_all_tasks() list of pet-task pairs
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +str special_needs
+        +list~Task~ tasks
+        +add_task(task) None
+        +edit_task(task, **changes) None
+        +remove_task(task) None
+        +get_tasks() list~Task~
+    }
+
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +Category category
+        +time preferred_start
+        +time fixed_time
+        +Recurrence recurrence
+        +bool required
+        +bool completed
+        +is_due(on) bool
+        +mark_complete() None
+        +priority_score() int
+    }
+
+    class Scheduler {
+        +Owner owner
+        +generate_plan(on) DailyPlan
+        +filter_due_tasks(on) list of pet-task pairs
+        +sort_tasks(tasks) list of pet-task pairs
+        +fit_to_available_time(tasks) scheduled and skipped lists
+        +detect_conflicts(items) list of overlapping pairs
+        +explain_choice(task, scheduled) str
+    }
+
+    class DailyPlan {
+        +date on
+        +list~ScheduledItem~ scheduled_items
+        +list~SkippedTask~ skipped_tasks
+        +total_minutes() int
+        +flagged_tasks() list~SkippedTask~
+        +summary() str
+        +explain() str
+        +to_table() list~dict~
+    }
+
+    class ScheduledItem {
+        +Task task
+        +Pet pet
+        +time start
+        +time end
+        +str reason
+        +duration() int
+        +overlaps(other) bool
+    }
+
+    class SkippedTask {
+        +Task task
+        +Pet pet
+        +str reason
+        +bool flagged
+    }
+
+    Owner "1" --> "*" Pet : has
+    Pet "1" --> "*" Task : needs
+    Task --> Priority
+    Task --> Category
+    Task --> Recurrence
+    Scheduler --> Owner : plans for
+    Scheduler ..> DailyPlan : creates
+    DailyPlan "1" --> "*" ScheduledItem : contains
+    DailyPlan "1" --> "*" SkippedTask : contains
+    ScheduledItem --> Task
+    ScheduledItem --> Pet
+    SkippedTask --> Task
+    SkippedTask --> Pet
